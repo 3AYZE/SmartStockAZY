@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse, unquote, parse_qs
 from urllib.request import Request, urlopen
 
-VERSION = "0.4.0-decision-quality"
+VERSION = "0.5.0-reliability-portfolio"
 HOST, PORT = "127.0.0.1", 8765
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "stonk.db"
@@ -151,7 +151,7 @@ def cache_put(key, value):
 
 
 def http_json(url, headers=None, timeout=12, method="GET", data=None, retries=1):
-    h = {"User-Agent": "Mozilla/5.0 StonkResearch/0.3", "Accept": "application/json,text/plain,*/*"}
+    h = {"User-Agent": "Mozilla/5.0 StonkResearch/0.5", "Accept": "application/json,text/plain,*/*"}
     if headers:
         h.update(headers)
     body = None if data is None else json.dumps(data).encode()
@@ -187,7 +187,8 @@ def init_db():
             avg_price REAL NOT NULL,
             thesis TEXT NOT NULL DEFAULT '',
             thesis_json TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT
         );
         CREATE TABLE IF NOT EXISTS research_history(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -208,13 +209,15 @@ def init_db():
             cols = {row[1] for row in con.execute("PRAGMA table_info(positions)").fetchall()}
             if "thesis_json" not in cols:
                 con.execute("ALTER TABLE positions ADD COLUMN thesis_json TEXT NOT NULL DEFAULT '[]'")
+            if "updated_at" not in cols:
+                con.execute("ALTER TABLE positions ADD COLUMN updated_at TEXT")
         except Exception:
             pass
         defaults = {
             "ollama_enabled":"false",
             "ollama_url":"http://127.0.0.1:11434",
             "ollama_model":"auto",
-            "sec_user_agent":"StonkResearch/0.3 contact@example.com",
+            "sec_user_agent":"StonkResearch/0.5 contact@example.com",
             "hunter_max_symbols":"36",
             "hunter_universe":"",
         }
@@ -354,7 +357,7 @@ def yahoo_chart_display(ticker, range_="1y"):
 
 
 def sec_headers():
-    return {"User-Agent": get_setting("sec_user_agent", "StonkResearch/0.3 contact@example.com"), "Accept": "application/json"}
+    return {"User-Agent": get_setting("sec_user_agent", "StonkResearch/0.5 contact@example.com"), "Accept": "application/json"}
 
 
 def sec_tickers():
@@ -695,6 +698,53 @@ def news_score(items):
     return {"score": round(total), "reasons": reasons, "events": events[:12], "items": annotated,
             "event_count": len(events), "confirmed_event_count": len([e for e in events if e["confirmation"] != "UNVERIFIED / LOW DIVERSITY"])}
 
+
+def yahoo_earnings_calendar(ticker):
+    ticker = clean_ticker(ticker)
+    key = ("earnings_calendar", ticker)
+    cached = cache_get(key, 21600)
+    if cached:
+        return cached
+    result = {"available": False, "next_earnings": None, "days_to_earnings": None, "risk": "UNKNOWN", "source": "Yahoo Finance calendar (best effort)"}
+    try:
+        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{quote(ticker)}?modules=calendarEvents"
+        data = http_json(url, timeout=7, retries=0)
+        payload = (((data.get("quoteSummary") or {}).get("result") or [{}])[0].get("calendarEvents") or {}).get("earnings") or {}
+        dates = payload.get("earningsDate") or []
+        raw = None
+        for d in dates:
+            if isinstance(d, dict) and d.get("raw"):
+                raw = int(d["raw"]); break
+        if raw:
+            dt = datetime.fromtimestamp(raw, timezone.utc)
+            days = (dt.date() - datetime.now(timezone.utc).date()).days
+            risk = "IMMINENT" if 0 <= days <= 2 else "NEAR" if 0 <= days <= 7 else "NORMAL"
+            result.update({"available": True, "next_earnings": dt.isoformat(), "days_to_earnings": days, "risk": risk})
+    except Exception as exc:
+        result["error"] = str(exc)
+    return cache_put(key, result)
+
+
+def sector_info(ticker):
+    bench = SECTOR_BENCHMARKS.get(clean_ticker(ticker), "^GSPC")
+    names = dict(SECTORS)
+    return {"benchmark": bench, "sector": names.get(bench, "Broad Market" if bench == "^GSPC" else bench)}
+
+
+def research_change_summary(history):
+    if not history or len(history) < 2:
+        return {"available": False, "items": [], "summary": "No prior comparable research snapshot yet."}
+    cur, prev = history[0], history[1]
+    items=[]
+    for key,label in (("price","Price"),("opportunity","Opportunity"),("entry","Entry"),("quality","Quality"),("risk","Risk"),("timing_risk","Timing risk")):
+        a,b=cur.get(key),prev.get(key)
+        if a is None or b is None: continue
+        delta=round(float(a)-float(b),2)
+        if abs(delta) >= (0.5 if key=="price" else 2):
+            items.append({"metric":label,"from":b,"to":a,"delta":delta})
+    return {"available": True, "status_from": prev.get("status"), "status_to": cur.get("status"), "items": items[:8],
+            "summary": f"Status changed from {prev.get('status')} to {cur.get('status')}." if prev.get('status') != cur.get('status') else "Status is unchanged; score/price movement is shown below."}
+
 def indicators(rows):
     c = [x["close"] for x in rows if x.get("close") is not None]
     if len(c) < 20:
@@ -703,133 +753,97 @@ def indicators(rows):
     sma20, sma50, sma200 = sma(20), sma(50), sma(200)
     gains, losses = [], []
     for a, b in zip(c[-15:-1], c[-14:]):
-        d = b - a; gains.append(max(d, 0)); losses.append(max(-d, 0))
-    ag = sum(gains) / len(gains) if gains else 0
-    al = sum(losses) / len(losses) if losses else 0
-    rsi = 100 if al == 0 else 100 - (100 / (1 + ag / al))
-    trs, rr = [], rows[-15:]
-    for i in range(1, len(rr)):
-        hi = fnum(rr[i].get("high")) or rr[i]["close"]
-        lo = fnum(rr[i].get("low")) or rr[i]["close"]
-        pc = rr[i-1]["close"]
-        trs.append(max(hi-lo, abs(hi-pc), abs(lo-pc)))
-    atr = sum(trs) / len(trs) if trs else c[-1] * .03
-    rets = [c[i] / c[i-1] - 1 for i in range(max(1, len(c)-20), len(c)) if c[i-1]]
-    vol = statistics.pstdev(rets) * math.sqrt(252) * 100 if len(rets) > 1 else None
-    price_std20 = statistics.pstdev(c[-20:]) if len(c) >= 20 else None
-    vols = [fnum(x.get("volume")) for x in rows[-21:-1] if fnum(x.get("volume")) is not None]
-    curvol = fnum(rows[-1].get("volume")); avgvol = sum(vols) / len(vols) if vols else None
-    rv = curvol / avgvol if curvol and avgvol else None
-    def mom(days):
-        return (c[-1] / c[-days-1] - 1) * 100 if len(c) > days and c[-days-1] else None
-    recent = rows[-20:]
-    lows = [fnum(x.get("low")) for x in recent if fnum(x.get("low")) is not None]
-    highs = [fnum(x.get("high")) for x in recent if fnum(x.get("high")) is not None]
-    year_rows = rows[-252:]
-    allhigh = [fnum(x.get("high")) for x in year_rows if fnum(x.get("high")) is not None]
-    alllow = [fnum(x.get("low")) for x in year_rows if fnum(x.get("low")) is not None]
-    support = min(lows) if lows else min(c[-20:]); resistance = max(highs) if highs else max(c[-20:])
-    high52 = max(allhigh) if allhigh else max(c); low52 = min(alllow) if alllow else min(c)
-    trend = 0
-    if sma20: trend += 1 if c[-1] > sma20 else -1
-    if sma20 and sma50: trend += 1 if sma20 > sma50 else -1
-    if sma50 and sma200: trend += 1 if sma50 > sma200 else -1
-    up_streak = 0
-    for i in range(len(c)-1, 0, -1):
-        if c[i] > c[i-1]: up_streak += 1
+        d = b-a; gains.append(max(d,0)); losses.append(max(-d,0))
+    ag=sum(gains)/len(gains) if gains else 0; al=sum(losses)/len(losses) if losses else 0
+    rsi=100 if al==0 else 100-(100/(1+ag/al))
+    trs=[]; rr=rows[-15:]
+    for i in range(1,len(rr)):
+        hi=fnum(rr[i].get("high")) or rr[i]["close"]; lo=fnum(rr[i].get("low")) or rr[i]["close"]; pc=rr[i-1]["close"]
+        trs.append(max(hi-lo,abs(hi-pc),abs(lo-pc)))
+    atr=sum(trs)/len(trs) if trs else c[-1]*.03
+    rets=[c[i]/c[i-1]-1 for i in range(max(1,len(c)-20),len(c)) if c[i-1]]
+    vol=statistics.pstdev(rets)*math.sqrt(252)*100 if len(rets)>1 else None
+    price_std20=statistics.pstdev(c[-20:]) if len(c)>=20 else None
+    vols=[fnum(x.get("volume")) for x in rows[-21:-1] if fnum(x.get("volume")) is not None]
+    curvol=fnum(rows[-1].get("volume")); avgvol=sum(vols)/len(vols) if vols else None; rv=curvol/avgvol if curvol and avgvol else None
+    def mom(days): return (c[-1]/c[-days-1]-1)*100 if len(c)>days and c[-days-1] else None
+    recent=rows[-20:]; lows=[fnum(x.get("low")) for x in recent if fnum(x.get("low")) is not None]; highs=[fnum(x.get("high")) for x in recent if fnum(x.get("high")) is not None]
+    year_rows=rows[-252:]; allhigh=[fnum(x.get("high")) for x in year_rows if fnum(x.get("high")) is not None]; alllow=[fnum(x.get("low")) for x in year_rows if fnum(x.get("low")) is not None]
+    support=min(lows) if lows else min(c[-20:]); resistance=max(highs) if highs else max(c[-20:]); high52=max(allhigh) if allhigh else max(c); low52=min(alllow) if alllow else min(c)
+    trend=0
+    if sma20: trend += 1 if c[-1]>sma20 else -1
+    if sma20 and sma50: trend += 1 if sma20>sma50 else -1
+    if sma50 and sma200: trend += 1 if sma50>sma200 else -1
+    up_streak=0
+    for i in range(len(c)-1,0,-1):
+        if c[i]>c[i-1]: up_streak+=1
         else: break
-    p = c[-1]
-    position20 = ((p - support) / (resistance - support) * 100) if resistance > support else 50
-    position52 = ((p - low52) / (high52 - low52) * 100) if high52 > low52 else 50
+    p=c[-1]; position20=((p-support)/(resistance-support)*100) if resistance>support else 50; position52=((p-low52)/(high52-low52)*100) if high52>low52 else 50
+    # Gap and falling-knife diagnostics.
+    gaps=[]
+    for i in range(max(1,len(rows)-20),len(rows)):
+        op=fnum(rows[i].get("open")); prev=fnum(rows[i-1].get("close"))
+        if op is not None and prev: gaps.append((op/prev-1)*100)
+    current_gap=gaps[-1] if gaps else None; max_gap=max((abs(x) for x in gaps[-5:]),default=0)
+    lower_lows=0
+    recent_lows=[fnum(x.get("low")) or x.get("close") for x in rows[-11:]]
+    for a,b in zip(recent_lows[:-1],recent_lows[1:]):
+        if a is not None and b is not None and b<a: lower_lows+=1
+    last20=c[-20:]; low20=min(last20); days_since_low=(len(last20)-1)-last20.index(low20); rebound=((p/low20)-1)*100 if low20 else 0
+    knife=0
+    if trend<=-2: knife+=30
+    if (mom(5) or 0)<-5: knife+=20
+    if (mom(21) or 0)<-12: knife+=20
+    knife+=min(20,lower_lows*4)
+    if days_since_low<=2 and rebound<3: knife+=10
+    knife=round(clamp(knife))
+    stabilization=round(clamp((days_since_low*5)+max(0,rebound*4)+(12 if trend>=0 else 0)-max(0,lower_lows-3)*4))
+    gap_risk=round(clamp(max(0,(abs(current_gap or 0)-2.5)*10)+max(0,(max_gap-4)*10)))
     return {
-        "price": p, "sma20": sma20, "sma50": sma50, "sma200": sma200,
-        "rsi14": rsi, "atr14": atr, "volatility20": vol, "relative_volume": rv,
-        "momentum_1w": mom(5), "momentum_1m": mom(21), "momentum_3m": mom(63), "momentum_6m": mom(126),
-        "support20": support, "resistance20": resistance, "high52": high52, "low52": low52,
-        "drawdown52": (p / high52 - 1) * 100 if high52 else None, "trend_score_raw": trend,
-        "current_volume": curvol, "avg_volume20": avgvol, "up_streak": up_streak,
-        "price_vs_sma20_pct": ((p / sma20 - 1) * 100 if sma20 else None),
-        "price_vs_sma50_pct": ((p / sma50 - 1) * 100 if sma50 else None),
-        "price_vs_sma200_pct": ((p / sma200 - 1) * 100 if sma200 else None),
-        "atr_from_sma20": ((p - sma20) / atr if sma20 and atr else None),
-        "position_20d_pct": position20, "position_52w_pct": position52,
-        "room_to_resistance_pct": ((resistance / p - 1) * 100 if p else None),
-        "distance_from_support_pct": ((p / support - 1) * 100 if support else None),
-        "price_z20": ((p - sma20) / price_std20 if sma20 and price_std20 else None),
+        "price":p,"sma20":sma20,"sma50":sma50,"sma200":sma200,"rsi14":rsi,"atr14":atr,"volatility20":vol,"relative_volume":rv,
+        "momentum_1w":mom(5),"momentum_1m":mom(21),"momentum_3m":mom(63),"momentum_6m":mom(126),"support20":support,"resistance20":resistance,"high52":high52,"low52":low52,
+        "drawdown52":(p/high52-1)*100 if high52 else None,"trend_score_raw":trend,"current_volume":curvol,"avg_volume20":avgvol,"up_streak":up_streak,
+        "price_vs_sma20_pct":((p/sma20-1)*100 if sma20 else None),"price_vs_sma50_pct":((p/sma50-1)*100 if sma50 else None),"price_vs_sma200_pct":((p/sma200-1)*100 if sma200 else None),
+        "atr_from_sma20":((p-sma20)/atr if sma20 and atr else None),"position_20d_pct":position20,"position_52w_pct":position52,
+        "room_to_resistance_pct":((resistance/p-1)*100 if p else None),"distance_from_support_pct":((p/support-1)*100 if support else None),"price_z20":((p-sma20)/price_std20 if sma20 and price_std20 else None),
+        "current_gap_pct":current_gap,"max_abs_gap_5d_pct":max_gap,"gap_risk":gap_risk,"lower_lows_10d":lower_lows,"days_since_20d_low":days_since_low,"rebound_from_20d_low_pct":rebound,
+        "falling_knife_risk":knife,"stabilization_score":stabilization,
     }
 
 
 def price_model(ind):
-    p = ind["price"]
-    atr = ind.get("atr14") or p * .03
-    support = ind.get("support20") or p - 2 * atr
-    resistance = ind.get("resistance20") or p + 2 * atr
-    sma20 = ind.get("sma20") or p
-    sma50 = ind.get("sma50") or sma20
-    sma200 = ind.get("sma200") or sma50
-
-    below = [x for x in (sma20, sma50, support) if x and x <= p * 1.01]
-    nearest_support = max(below) if below else support
-    deeper_support = min(nearest_support, max(support, min(sma50, sma20)))
-    risk = max(.01, min(support - 1.10 * atr, nearest_support - 1.45 * atr, p - 1.5 * atr))
-
-    strong_mid = max(.01, deeper_support)
-    strong_lo = max(.01, strong_mid - .45 * atr)
-    strong_hi = min(p, strong_mid + .35 * atr)
-    preferred_mid = max(strong_hi, nearest_support)
-    buy_lo = max(.01, preferred_mid - .30 * atr)
-    buy_hi = min(p, preferred_mid + .45 * atr)
-    if buy_hi < buy_lo: buy_hi = buy_lo
-
-    trend_reference = sma20 * .55 + sma50 * .30 + sma200 * .15
-    fair_lo = max(.01, trend_reference - .65 * atr)
-    fair_hi = trend_reference + .65 * atr
-    first_resistance = resistance if resistance > p else p + 1.25 * atr
-    take_lo = max(first_resistance, p + 1.15 * atr)
-    take_hi = take_lo + 1.35 * atr
-
-    risk_dollars = max(.01, p - risk)
-    first_reward = max(0, first_resistance - p)
-    rr = first_reward / risk_dollars
-
-    over = 0.0
-    d20, d50 = ind.get("price_vs_sma20_pct"), ind.get("price_vs_sma50_pct")
-    rsi, pos20 = ind.get("rsi14"), ind.get("position_20d_pct")
-    if d20 is not None: over += clamp((d20 - 3) * 2.2, 0, 28)
-    if d50 is not None: over += clamp((d50 - 8) * 1.25, 0, 25)
-    if rsi is not None: over += clamp((rsi - 65) * 1.5, 0, 24)
-    if pos20 is not None and pos20 > 88: over += clamp((pos20 - 88) * .7, 0, 9)
-    if (ind.get("momentum_1w") or 0) > 8: over += 7
-    if (ind.get("up_streak") or 0) >= 4: over += 5
-    over = round(clamp(over))
-
-    pullback = 35.0
-    if ind.get("trend_score_raw", 0) >= 1: pullback += 10
-    if abs((p - sma20) / atr) <= 1.0 if atr else False: pullback += 16
-    if rsi is not None and 40 <= rsi <= 60: pullback += 14
-    if ind.get("distance_from_support_pct") is not None and ind["distance_from_support_pct"] <= 7: pullback += 12
-    if ind.get("trend_score_raw", 0) <= -2: pullback -= 20
-    pullback = round(clamp(pullback))
-
-    timing = "CHASE RISK" if over >= 65 else "WAIT FOR PULLBACK" if over >= 45 else "FAVORABLE" if pullback >= 65 and rr >= 1.2 else "NEUTRAL"
-    return {
-        "current": round(p, 2),
-        "strong_buy_zone": [round(strong_lo, 2), round(strong_hi, 2)],
-        "buy_zone": [round(buy_lo, 2), round(buy_hi, 2)],
-        "reference_value_zone": [round(fair_lo, 2), round(fair_hi, 2)],
-        "take_profit_zone": [round(take_lo, 2), round(take_hi, 2)],
-        "risk_exit": round(risk, 2),
-        "bear_reference": round(max(.01, support - atr), 2),
-        "base_reference": round(trend_reference, 2),
-        "bull_reference": round(take_hi + atr, 2),
-        "risk_reward": round(rr, 2),
-        "potential_upside_pct": round((first_resistance / p - 1) * 100, 1),
-        "risk_to_exit_pct": round((risk / p - 1) * 100, 1),
-        "overextension_risk": over, "pullback_quality": pullback, "timing_status": timing,
-        "nearest_support": round(nearest_support, 2), "first_resistance": round(first_resistance, 2),
-        "method": "Timing-aware technical entry model using support/resistance, ATR, moving averages, momentum and overextension",
-        "warning": "Research ranges only; momentum alone never creates a BUY signal and no future price is guaranteed.",
-    }
+    p=ind["price"]; atr=ind.get("atr14") or p*.03; support=ind.get("support20") or p-2*atr; resistance=ind.get("resistance20") or p+2*atr
+    sma20=ind.get("sma20") or p; sma50=ind.get("sma50") or sma20; sma200=ind.get("sma200") or sma50
+    below=[x for x in (sma20,sma50,support) if x and x<=p*1.01]; nearest_support=max(below) if below else support; deeper_support=min(nearest_support,max(support,min(sma50,sma20)))
+    risk=max(.01,min(support-1.10*atr,nearest_support-1.45*atr,p-1.5*atr))
+    strong_mid=max(.01,deeper_support); strong_lo=max(.01,strong_mid-.45*atr); strong_hi=min(p,strong_mid+.35*atr)
+    preferred_mid=max(strong_hi,nearest_support); buy_lo=max(.01,preferred_mid-.30*atr); buy_hi=min(p,preferred_mid+.45*atr); buy_hi=max(buy_lo,buy_hi)
+    trend_reference=sma20*.55+sma50*.30+sma200*.15; fair_lo=max(.01,trend_reference-.65*atr); fair_hi=trend_reference+.65*atr
+    first_resistance=resistance if resistance>p else p+1.25*atr; take_lo=max(first_resistance,p+1.15*atr); take_hi=take_lo+1.35*atr
+    risk_dollars=max(.01,p-risk); first_reward=max(0,first_resistance-p); rr=first_reward/risk_dollars
+    downside_support=max(0,(p-nearest_support)/p*100) if p else 0; upside=max(0,(first_resistance-p)/p*100) if p else 0; asym=(upside/downside_support) if downside_support>.15 else 9.99
+    over=0.0; d20=ind.get("price_vs_sma20_pct"); d50=ind.get("price_vs_sma50_pct"); rsi=ind.get("rsi14"); pos20=ind.get("position_20d_pct")
+    if d20 is not None: over+=clamp((d20-3)*2.2,0,28)
+    if d50 is not None: over+=clamp((d50-8)*1.25,0,25)
+    if rsi is not None: over+=clamp((rsi-65)*1.5,0,24)
+    if pos20 is not None and pos20>88: over+=clamp((pos20-88)*.7,0,9)
+    if (ind.get("momentum_1w") or 0)>8: over+=7
+    if (ind.get("up_streak") or 0)>=4: over+=5
+    over+=ind.get("gap_risk",0)*.18; over=round(clamp(over))
+    pullback=35.0
+    if ind.get("trend_score_raw",0)>=1: pullback+=10
+    if abs((p-sma20)/atr)<=1.0 if atr else False: pullback+=16
+    if rsi is not None and 40<=rsi<=60: pullback+=14
+    if ind.get("distance_from_support_pct") is not None and ind["distance_from_support_pct"]<=7: pullback+=12
+    if ind.get("falling_knife_risk",0)>=50: pullback-=24
+    pullback=round(clamp(pullback))
+    timing="CHASE RISK" if over>=65 else "FALLING KNIFE" if ind.get("falling_knife_risk",0)>=65 else "WAIT FOR PULLBACK" if over>=45 else "FAVORABLE" if pullback>=65 and rr>=1.2 else "NEUTRAL"
+    return {"current":round(p,2),"strong_buy_zone":[round(strong_lo,2),round(strong_hi,2)],"buy_zone":[round(buy_lo,2),round(buy_hi,2)],"reference_value_zone":[round(fair_lo,2),round(fair_hi,2)],
+        "take_profit_zone":[round(take_lo,2),round(take_hi,2)],"risk_exit":round(risk,2),"bear_reference":round(max(.01,support-atr),2),"base_reference":round(trend_reference,2),"bull_reference":round(take_hi+atr,2),
+        "risk_reward":round(rr,2),"potential_upside_pct":round(upside,1),"risk_to_exit_pct":round((risk/p-1)*100,1),"downside_to_support_pct":round(downside_support,1),"upside_downside_ratio":round(asym,2),
+        "overextension_risk":over,"pullback_quality":pullback,"timing_status":timing,"nearest_support":round(nearest_support,2),"first_resistance":round(first_resistance,2),"gap_risk":ind.get("gap_risk",0),"falling_knife_risk":ind.get("falling_knife_risk",0),
+        "method":"Downside-first entry model using support/resistance, ATR, moving averages, gap risk, falling-knife risk and overextension",
+        "warning":"Research ranges only. The model evaluates downside before upside; momentum alone never creates a BUY signal."}
 
 
 def scores(ind, fund=None, nscore=0):
@@ -865,6 +879,8 @@ def scores(ind, fund=None, nscore=0):
     if ind.get("trend_score_raw", 0) < 0: risk += abs(ind["trend_score_raw"]) * 7
     risk += nscore * .50
     risk += pm["overextension_risk"] * .15
+    risk += ind.get("gap_risk",0) * .12
+    risk += ind.get("falling_knife_risk",0) * .18
 
     entry = 52.0
     rr = pm.get("risk_reward") or 0
@@ -876,7 +892,10 @@ def scores(ind, fund=None, nscore=0):
     entry += (pm["pullback_quality"] - 50) * .28
     entry -= pm["overextension_risk"] * .42
     if rsi is not None and 40 <= rsi <= 60 and ind.get("trend_score_raw", 0) >= 1: entry += 8
-    if ind.get("trend_score_raw", 0) <= -2: entry -= 14  # falling-knife protection
+    if ind.get("trend_score_raw", 0) <= -2: entry -= 14
+    entry -= ind.get("falling_knife_risk",0) * .28
+    entry -= ind.get("gap_risk",0) * .22
+    if pm.get("upside_downside_ratio",0) < 1.0: entry -= 12
     if (ind.get("distance_from_support_pct") or 0) > 14: entry -= 8
     if (ind.get("price_vs_sma50_pct") or 0) > 20: entry -= 10
 
@@ -925,6 +944,9 @@ def score_explanations(ind, fund, s, ns):
         add(entry, f"Price is {ind['price_vs_sma20_pct']:.1f}% from the 20-day average.", "negative" if ind['price_vs_sma20_pct'] > 8 else "neutral")
     if ind.get("rsi14") is not None and ind["rsi14"] >= 72: add(entry, f"RSI {ind['rsi14']:.1f} increases pullback/chase risk.", "negative")
     if ind.get("trend_score_raw", 0) <= -2: add(entry, "Weak trend triggers falling-knife protection; oversold alone is not treated as a buy.", "negative")
+    if ind.get("falling_knife_risk",0) >= 40: add(entry, f"Falling-knife risk is {ind['falling_knife_risk']}/100; stabilization must improve before entry credit rises.", "negative")
+    if ind.get("gap_risk",0) >= 30: add(entry, f"Recent opening-gap risk is {ind['gap_risk']}/100; the model penalizes chasing post-gap price.", "negative")
+    if pm.get("upside_downside_ratio",0) < 1.0: add(entry, f"Upside/downside to first resistance vs support is only {pm['upside_downside_ratio']:.2f}:1.", "negative")
     if fund and fund.get("available"):
         rg = fund.get("revenue_growth_pct"); ig = fund.get("net_income_growth_pct")
         if rg is not None: add(quality, f"Latest comparable annual SEC revenue growth is {rg:.1f}%.", "positive" if rg > 0 else "negative")
@@ -987,25 +1009,23 @@ def relative_strength(ticker, ind):
         return {"benchmark":benchmark,"benchmark_name":label_name,"score":50,"label":"UNKNOWN","error":str(exc)}
 
 
-def score_with_context(ind, fund, ns, regime, relative):
-    s = scores(ind, fund, ns.get("score", 0))
-    entry = s["entry"] + (regime or {}).get("entry_adjust", 0)
-    risk = s["risk"] + (regime or {}).get("risk_adjust", 0)
-    rel_score = (relative or {}).get("score", 50)
-    momentum = s["momentum"] + clamp((rel_score - 50) * .18, -7, 7)
-    quality, confidence = s["quality"], s["confidence"]
-    entry, risk, momentum = round(clamp(entry)), round(clamp(risk)), round(clamp(momentum))
-    safety = 100 - risk
-    opp = quality * .31 + momentum * .18 + entry * .34 + safety * .17
-    pm = price_model(ind)
-    if entry < 45: opp = min(opp, 58)
-    if pm["overextension_risk"] >= 65: opp = min(opp, 56)
-    if risk >= 70: opp = min(opp, 50)
-    return {**s,"opportunity":round(clamp(opp)),"entry":entry,"risk":risk,"momentum":momentum,
-            "market_adjustment": (regime or {}).get("entry_adjust",0),"relative_strength":rel_score}
+def score_with_context(ind, fund, ns, regime, relative, earnings=None):
+    s=scores(ind,fund,ns.get("score",0)); entry=s["entry"]+(regime or {}).get("entry_adjust",0); risk=s["risk"]+(regime or {}).get("risk_adjust",0)
+    days=(earnings or {}).get("days_to_earnings")
+    if days is not None and 0<=days<=2: entry-=14; risk+=14
+    elif days is not None and 0<=days<=7: entry-=8; risk+=8
+    rel_score=(relative or {}).get("score",50); momentum=s["momentum"]+clamp((rel_score-50)*.18,-7,7); quality,confidence=s["quality"],s["confidence"]
+    if (earnings or {}).get("available"): confidence+=4
+    entry,risk,momentum=round(clamp(entry)),round(clamp(risk)),round(clamp(momentum)); safety=100-risk
+    opp=quality*.31+momentum*.16+entry*.37+safety*.16; pm=price_model(ind)
+    if entry<50: opp=min(opp,56)
+    if pm["overextension_risk"]>=60: opp=min(opp,54)
+    if ind.get("falling_knife_risk",0)>=55: opp=min(opp,50)
+    if risk>=65: opp=min(opp,50)
+    return {**s,"opportunity":round(clamp(opp)),"entry":entry,"risk":risk,"momentum":momentum,"confidence":round(clamp(confidence)),"market_adjustment":(regime or {}).get("entry_adjust",0),"relative_strength":rel_score}
 
 
-def decision_layer(ind, fund, ns, s, ex, regime, relative):
+def decision_layer(ind, fund, ns, s, ex, regime, relative, earnings=None):
     pm = price_model(ind)
     company = s.get("quality", 50)
     entry = s.get("entry", 50)
@@ -1019,6 +1039,10 @@ def decision_layer(ind, fund, ns, s, ex, regime, relative):
     if s.get("risk",0) >= 60: why_not.append(f"Overall risk score is elevated at {s['risk']}/100.")
     if ns.get("score",0) >= 30: why_not.append(f"Recent event/news risk is {ns['score']}/100.")
     if (regime or {}).get("label") in ("RISK-OFF","HIGH VOLATILITY"): why_not.append(f"Market regime is {regime['label']}, so the entry threshold is stricter.")
+    if ind.get("gap_risk",0)>=30: why_not.append(f"Recent gap risk is {ind['gap_risk']}/100; post-gap chasing is penalized.")
+    if ind.get("falling_knife_risk",0)>=40: why_not.append(f"Falling-knife risk is {ind['falling_knife_risk']}/100; price needs stabilization before entry improves.")
+    days=(earnings or {}).get("days_to_earnings")
+    if days is not None and 0<=days<=7: why_not.append(f"Earnings are about {days} day(s) away, increasing event-gap risk.")
     if not why_not: why_not.append("No dominant deterministic reason to avoid the entry, but price outcomes remain uncertain.")
     buy_hi = pm.get("buy_zone", [None,None])[1]
     upgrade = []
@@ -1027,13 +1051,15 @@ def decision_layer(ind, fund, ns, s, ex, regime, relative):
     if pm["risk_reward"] < 1.5: upgrade.append("Reward/risk to first resistance improves to at least about 1.5:1.")
     if ns.get("score",0) >= 30: upgrade.append("Negative event risk falls below 30/100 or is contradicted by stronger primary evidence.")
     if (regime or {}).get("label") in ("RISK-OFF","HIGH VOLATILITY","CAUTIOUS"): upgrade.append("Broad market regime improves toward NEUTRAL or RISK-ON.")
+    if ind.get("falling_knife_risk",0)>=40: upgrade.append("Falling-knife risk drops below 35 as price stops making lower lows and stabilizes.")
+    if ind.get("gap_risk",0)>=30: upgrade.append("Post-gap price consolidates and gap risk cools instead of extending higher immediately.")
     downgrade = [f"Price closes below the model risk-exit level near {pm['risk_exit']:.2f}.", "Verified material news pushes event/news risk above 50/100."]
     if fund and fund.get("available"):
         downgrade.append("Comparable SEC revenue or net-income growth turns materially negative.")
     downgrade.append("Trend structure breaks below key moving averages with expanding downside volume.")
     return {"company_quality":company,"company_label":company_label,"entry_quality":entry,"entry_label":entry_label,
             "why_not_buy":why_not[:6],"upgrade_conditions":upgrade[:6],"downgrade_conditions":downgrade[:6],
-            "market_regime":regime,"relative_strength":relative}
+            "market_regime":regime,"relative_strength":relative,"earnings":earnings or {}}
 
 
 def parse_thesis_tags(value):
@@ -1072,32 +1098,40 @@ def evaluate_thesis(tags, pkg):
 
 
 def position_strategy(position, pkg, thesis_health):
-    price=pkg["quote"]["price"]; avg=float(position.get("avg_price") or 0); ind=pkg["indicators"]; pm=pkg["price_model"]
+    price=pkg["quote"]["price"]; avg=float(position.get("avg_price") or 0); ind=pkg["indicators"]; pm=pkg["price_model"]; earnings=pkg.get("earnings") or {}
     gain=(price/avg-1)*100 if avg else 0; atr=ind.get("atr14") or price*.03; sma20=ind.get("sma20") or price
-    candidates=[pm.get("risk_exit") or 0, price-2*atr, sma20-.45*atr]
+    base_model=pm.get("risk_exit") or 0; atr_trail=price-2*atr; sma_trail=sma20-.45*atr
+    candidates=[base_model,atr_trail,sma_trail]
     if gain>=10: candidates.append(avg*1.01)
     if gain>=20: candidates.append(avg*1.08)
-    trailing=max(x for x in candidates if x is not None)
-    trailing=min(trailing, price-.25*atr)
-    thesis_damage=(thesis_health or {}).get("damage",0)
-    ex=pkg.get("exit_risk",{}).get("score",0)
-    partial=0; reasons=[]
+    if gain>=35: candidates.append(avg*1.16)
+    trailing=max(x for x in candidates if x is not None); trailing=min(trailing,price-.25*atr)
+    methods=[]
+    if abs(trailing-atr_trail)<.01: methods.append("ATR trail")
+    if abs(trailing-sma_trail)<.01: methods.append("SMA20 trail")
+    if abs(trailing-base_model)<.01: methods.append("model risk exit")
+    if trailing>avg and gain>=10: methods.append("profit floor")
+    thesis_damage=(thesis_health or {}).get("damage",0); ex=pkg.get("exit_risk",{}).get("score",0); partial=0; reasons=[]
+    days=earnings.get("days_to_earnings")
     if ex>=70 or thesis_damage>=70:
         action="EXIT REVIEW"; reasons.append("Exit risk or thesis damage is severe.")
     elif price <= (pm.get("risk_exit") or 0):
         action="RISK EXIT REVIEW"; reasons.append("Price is at/below the model risk-exit level.")
+    elif gain>=25 and (ind.get("gap_risk",0)>=45 or pm.get("overextension_risk",0)>=60):
+        action="TAKE PARTIAL PROFIT / TRAIL"; partial=25; reasons.append("A strong winner is becoming extended/gap-sensitive; protect part of the gain.")
     elif gain>=35 and price >= (pm.get("take_profit_zone") or [10**18])[0]*.98:
         action="TAKE PARTIAL PROFIT / TRAIL"; partial=33; reasons.append("Large unrealized gain is near the first take-profit zone.")
     elif gain>=20:
-        action="HOLD + PROTECT PROFIT"; partial=25 if price >= (pm.get("take_profit_zone") or [10**18])[0]*.95 else 0; reasons.append("Position has a meaningful gain; trailing protection is now more important than the original stop.")
-    elif pkg.get("scores",{}).get("risk",0)>=60:
-        action="TIGHTEN RISK / REVIEW"; reasons.append("Current market risk is elevated.")
+        action="HOLD + PROTECT PROFIT"; partial=25 if price >= (pm.get("take_profit_zone") or [10**18])[0]*.95 else 0; reasons.append("Position has a meaningful gain; trailing protection is more important than the original stop.")
+    elif days is not None and 0<=days<=2 and gain>5:
+        action="EARNINGS RISK REVIEW"; reasons.append(f"Earnings are about {days} day(s) away; consider whether to carry the event gap risk.")
+    elif pkg.get("scores",{}).get("risk",0)>=60 or ind.get("falling_knife_risk",0)>=55:
+        action="TIGHTEN RISK / REVIEW"; reasons.append("Current market/technical downside risk is elevated.")
     else:
         action="HOLD / MONITOR"; reasons.append("No position-specific exit trigger currently dominates.")
     protected=(trailing/avg-1)*100 if avg and trailing>avg else 0
-    return {"action":action,"gain_percent":round(gain,1),"trailing_exit":round(max(.01,trailing),2),"partial_profit_percent":partial,
-            "protected_gain_percent":round(protected,1),"reasons":reasons,"automatic_trading":False}
-
+    return {"action":action,"gain_percent":round(gain,1),"trailing_exit":round(max(.01,trailing),2),"trailing_method":" + ".join(methods) or "blended model",
+            "partial_profit_percent":partial,"protected_gain_percent":round(protected,1),"earnings_risk":earnings,"reasons":reasons,"automatic_trading":False}
 
 def research_history(ticker, limit=10):
     ticker=clean_ticker(ticker)
@@ -1124,7 +1158,9 @@ def save_research_snapshot(pkg):
         changed=prev.get("status")!=current["status"] or any(abs((prev.get(k) or 0)-(current.get(k) or 0))>=5 for k in ("opportunity","entry","quality","risk","timing_risk"))
         should=changed or age>=900
     if not should: return
-    payload={"market_regime":(pkg.get("market_regime") or {}).get("label"),"relative_strength":(pkg.get("relative_strength") or {}).get("score")}
+    payload={"market_regime":(pkg.get("market_regime") or {}).get("label"),"relative_strength":(pkg.get("relative_strength") or {}).get("score"),
+             "gap_risk":(pkg.get("indicators") or {}).get("gap_risk"),"falling_knife_risk":(pkg.get("indicators") or {}).get("falling_knife_risk"),
+             "earnings_risk":(pkg.get("earnings") or {}).get("risk")}
     try:
         with DB_LOCK, connect() as con:
             con.execute("INSERT INTO research_history(ticker,created_at,status,price,opportunity,entry,quality,risk,confidence,timing_risk,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -1155,32 +1191,33 @@ def basic_stock(ticker, range_="1y"):
     }
 
 
-def core_summary(ind, fund, ns, s, ex, regime=None, relative=None):
-    bull, bear, contra = [], [], []
-    pm = price_model(ind)
-    if ind.get("trend_score_raw", 0) >= 2: bull.append("Price trend is constructive across multiple moving-average checks.")
-    if (relative or {}).get("score",50) >= 60: bull.append(f"Relative strength is {(relative or {}).get('label','strong')} versus {(relative or {}).get('benchmark_name','market benchmark')}.")
-    if fund and fund.get("revenue_growth_pct") is not None and fund["revenue_growth_pct"] > 5: bull.append("Latest SEC annual revenue comparison shows growth.")
-    if fund and fund.get("free_cashflow_est") is not None and fund["free_cashflow_est"] > 0: bull.append("Estimated free cash flow from SEC facts is positive.")
-    if ind.get("trend_score_raw", 0) < 0: bear.append("Price trend is technically weak; oversold conditions alone do not override this.")
-    if (ind.get("volatility20") or 0) > 45: bear.append("Recent annualized volatility is elevated.")
-    if ns.get("score", 0) >= 30: bear.append("Recent event/news risk requires source review.")
-    if pm["overextension_risk"] >= 55: bear.append(f"Timing risk is {pm['overextension_risk']}/100; price may be vulnerable to a pullback even though momentum is positive.")
+def core_summary(ind, fund, ns, s, ex, regime=None, relative=None, earnings=None):
+    bull,bear,contra=[],[],[]; pm=price_model(ind); days=(earnings or {}).get("days_to_earnings")
+    if ind.get("trend_score_raw",0)>=2: bull.append("Price trend is constructive across multiple moving-average checks.")
+    if (relative or {}).get("score",50)>=60: bull.append(f"Relative strength is {(relative or {}).get('label','strong')} versus {(relative or {}).get('benchmark_name','market benchmark')}.")
+    if fund and fund.get("revenue_growth_pct") is not None and fund["revenue_growth_pct"]>5: bull.append("Latest SEC annual revenue comparison shows growth.")
+    if fund and fund.get("free_cashflow_est") is not None and fund["free_cashflow_est"]>0: bull.append("Estimated free cash flow from SEC facts is positive.")
+    if ind.get("trend_score_raw",0)<0: bear.append("Price trend is technically weak; oversold conditions alone do not override this.")
+    if ind.get("falling_knife_risk",0)>=40: bear.append(f"Falling-knife risk is {ind['falling_knife_risk']}/100.")
+    if ind.get("gap_risk",0)>=30: bear.append(f"Recent price-gap risk is {ind['gap_risk']}/100.")
+    if (ind.get("volatility20") or 0)>45: bear.append("Recent annualized volatility is elevated.")
+    if ns.get("score",0)>=30: bear.append("Recent event/news risk requires source review.")
+    if pm["overextension_risk"]>=55: bear.append(f"Timing risk is {pm['overextension_risk']}/100; price may be vulnerable to a pullback even though momentum is positive.")
     if (regime or {}).get("label") in ("RISK-OFF","HIGH VOLATILITY"): bear.append(f"Broad-market regime is {regime['label']}, increasing downside sensitivity.")
-    if fund and fund.get("revenue_growth_pct") is not None and fund["revenue_growth_pct"] < 0: bear.append("Latest comparable annual SEC revenue declined.")
-    if s["momentum"] >= 70 and s["entry"] < 55: contra.append("Momentum is strong while entry quality is weak; the model explicitly avoids chasing this setup.")
-    if s["quality"] >= 70 and s["entry"] < 50: contra.append("Company quality is strong, but the current price is not a strong entry.")
-    if s["opportunity"] >= 60 and pm["overextension_risk"] >= 55: contra.append("Underlying setup may be interesting, but current price timing is unfavorable.")
-    if ex["score"] >= 70: status = "EXIT REVIEW"
-    elif s["risk"] >= 70: status = "HIGH RISK / AVOID"
-    elif s["opportunity"] >= 65 and s["entry"] >= 70 and pm["overextension_risk"] < 45 and s["confidence"] >= 60: status = "BUY ZONE"
-    elif s["opportunity"] >= 65 and s["entry"] >= 70 and s["confidence"] < 60: status = "TECHNICAL SETUP / VERIFY"
-    elif s["opportunity"] >= 60 and (s["entry"] < 60 or pm["overextension_risk"] >= 45): status = "WAIT FOR PULLBACK"
-    elif s["entry"] < 45: status = "WAIT"
-    else: status = "HOLD / RESEARCH"
-    return {"status":status,"summary":f"Company quality {s['quality']}/100; current entry {s['entry']}/100; timing risk {pm['overextension_risk']}/100; total risk {s['risk']}/100. A rising price cannot trigger BUY by itself.",
-            "bull_case":bull or ["No strong deterministic bull condition was confirmed."],"bear_case":bear or ["No major deterministic bear condition was confirmed."],
-            "contradicting_evidence":contra or ["No major model contradiction detected."],"confidence":s["confidence"]}
+    if days is not None and 0<=days<=7: bear.append(f"Earnings are approximately {days} day(s) away, creating event-gap risk.")
+    if s["momentum"]>=70 and s["entry"]<55: contra.append("Momentum is strong while entry quality is weak; the model explicitly avoids chasing this setup.")
+    if s["quality"]>=70 and s["entry"]<50: contra.append("Company quality is strong, but the current price is not a strong entry.")
+    if ex["score"]>=70: status="EXIT REVIEW"
+    elif s["risk"]>=65: status="HIGH RISK / AVOID"
+    elif ind.get("falling_knife_risk",0)>=60: status="WAIT FOR STABILIZATION"
+    elif s["opportunity"]>=68 and s["entry"]>=76 and s["quality"]>=60 and s["risk"]<45 and pm["overextension_risk"]<40 and pm.get("risk_reward",0)>=1.5 and s["confidence"]>=65 and not(days is not None and 0<=days<=2): status="BUY ZONE"
+    elif s["entry"]>=70 and s["confidence"]<65: status="TECHNICAL SETUP / VERIFY"
+    elif s["opportunity"]>=58 and (s["entry"]<65 or pm["overextension_risk"]>=40): status="WAIT FOR PULLBACK"
+    elif s["entry"]<45: status="WAIT"
+    else: status="HOLD / RESEARCH"
+    return {"status":status,"summary":f"Company quality {s['quality']}/100; current entry {s['entry']}/100; downside-first R/R {pm['risk_reward']}:1; timing risk {pm['overextension_risk']}/100; total risk {s['risk']}/100. BUY requires quality, entry, downside control, evidence and event-risk checks together.",
+        "bull_case":bull or ["No strong deterministic bull condition was confirmed."],"bear_case":bear or ["No major deterministic bear condition was confirmed."],"contradicting_evidence":contra or ["No major model contradiction detected."],"confidence":s["confidence"]}
+
 
 def stored_thesis(ticker):
     with connect() as con:
@@ -1191,10 +1228,11 @@ def stored_thesis(ticker):
 
 def research_package(ticker, use_ai=False):
     ticker = clean_ticker(ticker)
-    key = ("research_core_v04", ticker)
+    key = ("research_core_v05", ticker)
     cached = cache_get(key, 300)
     if cached:
         cached["research_history"] = research_history(ticker, 10)
+        cached["research_change"] = research_change_summary(cached["research_history"])
         return cached
     base = basic_stock(ticker)
     name = base["quote"]["name"] or ticker
@@ -1202,29 +1240,30 @@ def research_package(ticker, use_ai=False):
     def grab(label, fn, fallback):
         try: results[label] = fn()
         except Exception as exc: results[label] = fallback(exc)
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         futs = [
             pool.submit(grab, "fund", lambda: sec_fundamentals(ticker), lambda e: {"available": False, "error": str(e)}),
             pool.submit(grab, "filings", lambda: sec_filings(ticker), lambda e: [{"form": "SEC_UNAVAILABLE", "description": str(e), "reliability": 0}]),
             pool.submit(grab, "news", lambda: fast_news(name if name != ticker else ticker, 24, True), lambda e: []),
             pool.submit(grab, "regime", market_regime, lambda e: {"label":"UNKNOWN","entry_adjust":0,"risk_adjust":0,"error":str(e)}),
             pool.submit(grab, "relative", lambda: relative_strength(ticker, base["indicators"]), lambda e: {"score":50,"label":"UNKNOWN","error":str(e)}),
+            pool.submit(grab, "earnings", lambda: yahoo_earnings_calendar(ticker), lambda e: {"available":False,"risk":"UNKNOWN","error":str(e)}),
         ]
         for f in futs: f.result()
     fund = results.get("fund") or {"available": False}; filings = results.get("filings") or []; raw_news = results.get("news") or []
-    regime=results.get("regime") or {}; relative=results.get("relative") or {}
+    regime=results.get("regime") or {}; relative=results.get("relative") or {}; earnings=results.get("earnings") or {}
     ns = news_score(raw_news); news = ns.pop("items")
-    s = score_with_context(base["indicators"], fund, ns, regime, relative)
+    s = score_with_context(base["indicators"], fund, ns, regime, relative, earnings)
     thesis = stored_thesis(ticker)
     # initial thesis health needs package-shaped inputs
     temp={**base,"fundamentals":fund,"news_risk":ns,"scores":s}
     th=evaluate_thesis(thesis.get("tags",[]),temp)
     ex = exit_risk(s, ns["score"], base["indicators"], th.get("damage",0))
-    core=core_summary(base["indicators"], fund, ns, s, ex, regime, relative)
-    decision=decision_layer(base["indicators"],fund,ns,s,ex,regime,relative)
+    core=core_summary(base["indicators"], fund, ns, s, ex, regime, relative, earnings)
+    decision=decision_layer(base["indicators"],fund,ns,s,ex,regime,relative,earnings)
     base.update({
         "fundamentals": fund, "filings": filings, "news": news, "news_risk": ns, "scores": s, "exit_risk": ex,
-        "price_model": price_model(base["indicators"]), "market_regime":regime,"relative_strength":relative,
+        "price_model": price_model(base["indicators"]), "market_regime":regime,"relative_strength":relative,"earnings":earnings,
         "core_research":core,"decision_layer":decision,
         "score_explanations": score_explanations(base["indicators"], fund, s, ns), "stored_thesis": thesis.get("text",""),
         "stored_thesis_tags": thesis.get("tags",[]), "thesis_health":th,
@@ -1236,10 +1275,12 @@ def research_package(ticker, use_ai=False):
             "status": "READY ON DEMAND" if get_setting("ollama_enabled", "false") == "true" else "CORE RESEARCH",
             "summary": "Ollama is optional and never blocks Core Research." if get_setting("ollama_enabled", "false") == "true" else "Ollama is disabled. Core Research remains fully active.",
             "confidence": s["confidence"]},
-        "performance": {"core_cached_seconds": 300, "news_provider": "Yahoo Finance search + GDELT fallback"},
+        "freshness": {"market": base["quote"].get("updated_at"), "research": now_iso(), "news": now_iso(), "sec_fiscal_end": fund.get("latest_fiscal_end"), "latest_filing": next((x.get("date") for x in filings if x.get("date")), None)},
+        "performance": {"core_cached_seconds": 300, "news_provider": "Yahoo Finance search + GDELT fallback", "staged": True},
     })
     save_research_snapshot(base)
     base["research_history"] = research_history(ticker, 10)
+    base["research_change"] = research_change_summary(base["research_history"])
     return cache_put(key, base)
 
 def ai_research_package(ticker):
@@ -1299,7 +1340,8 @@ def hunter_scan(symbols=None, limit=28):
         if sc["entry"]<45 or pm.get("overextension_risk",0)>=65: sc["opportunity"]=min(sc["opportunity"],58)
         status = "STRONG SETUP" if sc["opportunity"] >= 72 and sc["entry"] >= 68 and sc["risk"] < 48 and pm.get("overextension_risk", 100) < 45 else "WAIT FOR PULLBACK" if sc["opportunity"] >= 58 and (sc["entry"] < 60 or pm.get("overextension_risk", 0) >= 45) else "HIGH RISK" if sc["risk"] >= 65 else "RESEARCH" if sc["opportunity"] >= 56 else "WATCH"
         return {"ticker":t,"name":b["quote"]["name"],"price":b["quote"]["price"],"change_percent":b["quote"]["change_percent"],
-            "scores":sc,"status":status,"indicators":{k:ind.get(k) for k in ("rsi14","relative_volume","momentum_1m","momentum_3m","volatility20","drawdown52")},
+            "scores":sc,"status":status,"sector":sector_info(t),"indicators":{k:ind.get(k) for k in ("rsi14","relative_volume","momentum_1m","momentum_3m","volatility20","drawdown52","avg_volume20","gap_risk","falling_knife_risk")},
+            "why":("Healthy entry + controlled risk" if status=="STRONG SETUP" else "Extended; wait for better price" if status=="WAIT FOR PULLBACK" else "Risk elevated" if status=="HIGH RISK" else "Needs deeper evidence"),
             "price_model":pm,"setup_rank":round(sc["opportunity"]*.52+sc["entry"]*.33+(100-sc["risk"])*.15,1)}
     with ThreadPoolExecutor(max_workers=8) as pool:
         futs = {pool.submit(one, t): t for t in symbols}
@@ -1307,6 +1349,12 @@ def hunter_scan(symbols=None, limit=28):
             try: out.append(f.result())
             except Exception as exc: errors.append({"ticker": futs[f], "error": str(exc)[:140]})
     out.sort(key=lambda x: (x.get("setup_rank", 0), x["scores"]["confidence"]), reverse=True)
+    finalists=out[:5]
+    def warm(row):
+        try:
+            t=row["ticker"]; sec_fundamentals(t); sec_filings(t); fast_news(row.get("name") or t,12,True)
+        except Exception: pass
+    threading.Thread(target=lambda:[warm(x) for x in finalists],daemon=True).start()
     return {"results":out[:max(1,min(int(limit),60))],"scanned":len(symbols),"successful":len(out),"errors":errors[:10],
         "regime":regime,"note":"Fast quantitative first pass with market-regime adjustment. Run Deep Research on finalists before treating a candidate as actionable.","updated_at":now_iso()}
 
@@ -1370,22 +1418,32 @@ def portfolio_risk():
         strategy=position_strategy(p,r,th); reasons = r["news_risk"].get("reasons", [])[:4]
         return {**p,"thesis_tags":tags,"price":price,"value":val,"pnl":pnl_dollar,"pnl_percent":pnl_pct,"exit_risk":ex,
                 "price_model":r["price_model"],"news_risk":r["news_risk"],"top_risk_news":reasons,"scores":r["scores"],
-                "thesis_health":th,"position_strategy":strategy}
+                "thesis_health":th,"position_strategy":strategy,"earnings":r.get("earnings") or {}}
     if positions:
         with ThreadPoolExecutor(max_workers=min(6, len(positions))) as pool:
             futs = {pool.submit(one, p): p for p in positions}
             for f in as_completed(futs):
                 try: out.append(f.result())
                 except Exception as exc: out.append({**futs[f], "error": str(exc)})
-    total = sum(x.get("value", 0) for x in out); total_cost = sum(p["shares"] * p["avg_price"] for p in positions); warnings = []
-    if total > 0:
+    total=sum(x.get("value",0) for x in out); total_cost=sum(p["shares"]*p["avg_price"] for p in positions); warnings=[]; sector_values={}; grouped={}
+    if total>0:
         for x in out:
             if x.get("value"):
-                pct = x["value"] / total * 100; x["weight_percent"] = pct
-                if pct >= 30: warnings.append({"type": "POSITION CONCENTRATION", "ticker": x["ticker"], "percent": round(pct, 1), "severity": "HIGH" if pct >= 50 else "WATCH"})
-    out.sort(key=lambda x: (x.get("exit_risk") or {}).get("score", -1), reverse=True)
-    return {"positions":out,"total_value":total,"total_cost":total_cost,"total_pnl":total-total_cost,
-            "total_pnl_percent":((total/total_cost-1)*100 if total_cost else 0),"warnings":warnings,"updated_at":now_iso()}
+                pct=x["value"]/total*100; x["weight_percent"]=pct
+                sec=sector_info(x["ticker"])["sector"]; x["sector"]=sec; sector_values[sec]=sector_values.get(sec,0)+x["value"]
+                g=grouped.setdefault(x["ticker"],{"ticker":x["ticker"],"shares":0.0,"cost":0.0,"value":0.0,"lots":0})
+                g["shares"]+=x["shares"]; g["cost"]+=x["shares"]*x["avg_price"]; g["value"]+=x["value"]; g["lots"]+=1
+        for sec,val in sector_values.items():
+            pct=val/total*100
+            if pct>=45: warnings.append({"type":"SECTOR CONCENTRATION","ticker":sec,"percent":round(pct,1),"severity":"HIGH" if pct>=65 else "WATCH"})
+    grouped_rows=[]
+    for g in grouped.values():
+        if total and g["value"]/total*100>=30:
+            gpct=g["value"]/total*100; warnings.append({"type":"POSITION CONCENTRATION","ticker":g["ticker"],"percent":round(gpct,1),"severity":"HIGH" if gpct>=50 else "WATCH"})
+        g["avg_cost"]=g["cost"]/g["shares"] if g["shares"] else 0; g["pnl"]=g["value"]-g["cost"]; g["pnl_percent"]=(g["value"]/g["cost"]-1)*100 if g["cost"] else 0; grouped_rows.append(g)
+    out.sort(key=lambda x:(x.get("exit_risk") or {}).get("score",-1),reverse=True)
+    return {"positions":out,"grouped":sorted(grouped_rows,key=lambda x:x["value"],reverse=True),"sector_exposure":[{"sector":k,"value":v,"percent":round(v/total*100,1)} for k,v in sorted(sector_values.items(),key=lambda kv:kv[1],reverse=True)] if total else [],
+            "total_value":total,"total_cost":total_cost,"total_pnl":total-total_cost,"total_pnl_percent":((total/total_cost-1)*100 if total_cost else 0),"warnings":warnings,"updated_at":now_iso()}
 
 def alerts_payload():
     risk = portfolio_risk()
@@ -1413,7 +1471,7 @@ def settings_payload():
         "ollama_enabled": get_setting("ollama_enabled", "false") == "true",
         "ollama_url": get_setting("ollama_url", "http://127.0.0.1:11434"),
         "ollama_model": get_setting("ollama_model", "auto"),
-        "sec_user_agent": get_setting("sec_user_agent", "StonkResearch/0.3 contact@example.com"),
+        "sec_user_agent": get_setting("sec_user_agent", "StonkResearch/0.5 contact@example.com"),
         "hunter_max_symbols": int(get_setting("hunter_max_symbols", "36") or 36),
         "hunter_universe": get_setting("hunter_universe", ""),
     }
@@ -1514,7 +1572,7 @@ class Handler(BaseHTTPRequestHandler):
                 url = str(body.get("ollama_url") or "http://127.0.0.1:11434").strip().rstrip("/")
                 if not re.match(r"^https?://", url):
                     raise ValueError("Ollama URL must start with http:// or https://")
-                ua = str(body.get("sec_user_agent") or "StonkResearch/0.3 contact@example.com").strip()[:200]
+                ua = str(body.get("sec_user_agent") or "StonkResearch/0.5 contact@example.com").strip()[:200]
                 set_setting("ollama_enabled", "true" if body.get("ollama_enabled") else "false")
                 set_setting("ollama_url", url)
                 set_setting("ollama_model", str(body.get("ollama_model") or "auto")[:160])
@@ -1536,13 +1594,31 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Shares and average price must be positive")
                 with DB_LOCK, connect() as con:
                     tags = parse_thesis_tags(body.get("thesis_tags") or [])
-                    cur = con.execute("INSERT INTO positions(ticker,shares,avg_price,thesis,thesis_json,created_at) VALUES(?,?,?,?,?,?)", (t, sh, ap, str(body.get("thesis") or ""), json.dumps(tags), now_iso()))
+                    cur = con.execute("INSERT INTO positions(ticker,shares,avg_price,thesis,thesis_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (t, sh, ap, str(body.get("thesis") or ""), json.dumps(tags), now_iso(), now_iso()))
                     con.commit()
                     row = con.execute("SELECT * FROM positions WHERE id=?", (cur.lastrowid,)).fetchone()
                 return send_json(self, dict(row), 201)
             return send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
             send_json(self, {"error": str(exc)}, 400)
+
+
+    def do_PUT(self):
+        try:
+            p=urlparse(self.path).path; body=read_body(self)
+            if p.startswith("/api/positions/"):
+                pid=int(p.rsplit("/",1)[1]); t=clean_ticker(body.get("ticker")); sh=float(body.get("shares") or 0); ap=float(body.get("avg_price") or 0)
+                if sh<=0 or ap<=0: raise ValueError("Shares and average price must be positive")
+                tags=parse_thesis_tags(body.get("thesis_tags") or [])
+                with DB_LOCK, connect() as con:
+                    exists=con.execute("SELECT id FROM positions WHERE id=?",(pid,)).fetchone()
+                    if not exists: raise ValueError("Position not found")
+                    con.execute("UPDATE positions SET ticker=?,shares=?,avg_price=?,thesis=?,thesis_json=?,updated_at=? WHERE id=?",(t,sh,ap,str(body.get("thesis") or ""),json.dumps(tags),now_iso(),pid)); con.commit()
+                    row=con.execute("SELECT * FROM positions WHERE id=?",(pid,)).fetchone()
+                return send_json(self,dict(row))
+            return send_json(self,{"error":"Not found"},404)
+        except Exception as exc:
+            send_json(self,{"error":str(exc)},400)
 
     def do_DELETE(self):
         try:
