@@ -1,4 +1,4 @@
-# SmartStockAZY v0.5.0 — Reliability + Portfolio Polish
+# SmartStockAZY v0.5.1 — Opt-in GitHub Updates
 
 A lightweight, $0-first local stock research terminal for Windows. The core engine is deterministic; Ollama remains optional.
 
@@ -90,3 +90,43 @@ Close the app fully first. Back up stonk.db **along with any existing stonk.db-w
 ### Accuracy and launch limitations
 
 This app uses free, best-effort market and news sources. Source timestamps and UNKNOWN/UNAVAILABLE labels reduce misleading output but do not ensure exchange-grade price freshness or investment accuracy. Signals have not been calibrated by historical backtests. Windows UI, all controls, and live source-provider resilience still require manual verification before release.
+
+
+## v0.5.1 — Opt-in GitHub auto-updater
+
+The Windows app checks the GitHub **main** branch at launch and periodically (at most every 6 hours, unless you manually press Check for Updates). It compares the actual application-file Git hashes against the selected main-branch commit, so documentation-only commits do not trigger a new program update and a forgotten version-number bump does not hide one.
+
+**Settings → Application Updates** contains:
+
+1. **CHECK FOR UPDATES** — manually refresh from GitHub.
+2. **DOWNLOAD & VERIFY** — download only the selected immutable main-branch commit and validate each managed file against GitHub's commit tree.
+3. **RESTART TO INSTALL** — explicitly approve installation. The existing window reconnects after the backend restarts.
+
+There is also an **UPDATE AVAILABLE** notification in the top bar. The app **never silently installs code or auto-updates while you work**.
+
+### Private GitHub repository
+
+This repository is currently private. Unauthenticated updater checks cannot access private GitHub files. To enable update checking on a computer with access to this repository:
+
+- Install the free GitHub CLI (https://cli.github.com/).
+- Run the command **gh auth login** once in a terminal using a GitHub account with permission to view this repository.
+- Start SmartStockAZY and select **Settings → Check for Updates**.
+
+The app reuses an existing CLI login in memory; **no GitHub token is embedded in its source or saved in the SQLite settings database**. If the repository becomes public later, the updater can use GitHub without the CLI.
+
+### Updating existing installations
+
+**One-time bootstrap:** versions older than v0.5.1 do not have an updater. Replace the *program files* from the GitHub main-branch download once (while the app is fully closed), **without deleting your existing stonk.db**. Thereafter, the application can detect future changes to main.
+
+### Safety and recovery
+
+- The update only replaces: StonkResearch.pyw, app.js, app.css, index.html, update_support.py, README.md.
+- stonk.db, its SQLite journal files, settings, research history, downloaded data, and custom files are not intentionally overwritten.
+- Before replacement, a backup of existing program files and an online SQLite backup of the portfolio database is stored in %LOCALAPPDATA%\SmartStockAZY\backups\ on Windows.
+- A failed replacement triggers rollback of already replaced application files; the last update result is shown in Settings.
+- Code is obtained only from the hardcoded 3AYZE/SmartStockAZY repository, main branch, over HTTPS and pinned to a specific commit. Source contents are verified against Git blob hashes before installing. This validates the downloaded code against the chosen GitHub commit; it does **not** audit the safety of changes the repository owner merges.
+- Installing into a protected folder (for example C:\Program Files) may fail without write access. Use a writable location for portable installation.
+- On GitHub authentication, provider, or network errors, the current app continues to work; status is shown clearly instead of installing unverified files.
+- Automated tests run on Windows and Linux in GitHub Actions. Manual Windows double-click, update/relaunch and private-account tests are still required before treating the updater as production-verified.
+
+**No Python packages, paid updater service, automatic trading, or mandatory AI are required.**
