@@ -11,6 +11,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -93,6 +94,17 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def history_stale(rows):
+    try:
+        observed = datetime.fromisoformat(rows[-1]["time"])
+        if observed.tzinfo is None:
+            return True
+        age_seconds = (datetime.now(timezone.utc) - observed).total_seconds()
+        return age_seconds > 5 * 86400 or age_seconds < -3600
+    except (IndexError, KeyError, TypeError, ValueError):
+        return True
+
+
 def clamp(v, lo=0.0, hi=100.0):
     return max(lo, min(hi, v))
 
@@ -112,6 +124,13 @@ def fnum(v):
         return None if math.isnan(x) or math.isinf(x) else x
     except Exception:
         return None
+
+
+def positive_number(value, label):
+    number = fnum(value)
+    if number is None or number <= 0:
+        raise ValueError(f"{label} must be a finite positive number")
+    return number
 
 def normalize_chart_range(range_):
     value = str(range_ or "1y").strip().lower()
@@ -150,6 +169,12 @@ def cache_put(key, value):
     return value
 
 
+def invalidate_research(*tickers):
+    with CACHE_LOCK:
+        for ticker in tickers:
+            CACHE.pop(("research_core_v05", ticker), None)
+
+
 def http_json(url, headers=None, timeout=12, method="GET", data=None, retries=1):
     h = {"User-Agent": "Mozilla/5.0 StonkResearch/0.5", "Accept": "application/json,text/plain,*/*"}
     if headers:
@@ -169,10 +194,15 @@ def http_json(url, headers=None, timeout=12, method="GET", data=None, retries=1)
     raise RuntimeError(f"Request failed: {last}")
 
 
+@contextmanager
 def connect():
     con = sqlite3.connect(DB_PATH, timeout=5)
     con.row_factory = sqlite3.Row
-    return con
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 def init_db():
@@ -211,8 +241,8 @@ def init_db():
                 con.execute("ALTER TABLE positions ADD COLUMN thesis_json TEXT NOT NULL DEFAULT '[]'")
             if "updated_at" not in cols:
                 con.execute("ALTER TABLE positions ADD COLUMN updated_at TEXT")
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RuntimeError("Positions schema migration failed") from exc
         defaults = {
             "ollama_enabled":"false",
             "ollama_url":"http://127.0.0.1:11434",
@@ -295,6 +325,7 @@ def yahoo_chart(ticker, range_="1y"):
                     continue
                 rows.append({
                     "date": datetime.fromtimestamp(stamp, timezone.utc).date().isoformat(),
+                    "time": datetime.fromtimestamp(stamp, timezone.utc).isoformat(),
                     "open": fnum(opens[i] if i < len(opens) else None),
                     "high": fnum(highs[i] if i < len(highs) else None),
                     "low": fnum(lows[i] if i < len(lows) else None),
@@ -349,7 +380,8 @@ def yahoo_chart_display(ticker, range_="1y"):
                 })
             if len(rows) < 2:
                 raise ValueError("Not enough chart points")
-            out = {"ticker": ticker, "range": norm, "interval": interval, "history": rows, "updated_at": now_iso()}
+            out = {"ticker": ticker, "range": norm, "interval": interval, "history": rows,
+                   "updated_at": rows[-1]["time"], "retrieved_at": now_iso()}
             return cache_put(key, out)
         except Exception as exc:
             err = exc
@@ -446,18 +478,26 @@ def _fact_points(facts, tags, unit="USD"):
                 continue
             v = fnum(x.get("val"))
             if v is not None:
-                points.append({"v": v, "fy": x.get("fy"), "fp": x.get("fp"), "form": x.get("form"), "filed": x.get("filed"), "end": x.get("end")})
+                points.append({"v": v, "fy": x.get("fy"), "fp": x.get("fp"), "form": x.get("form"), "filed": x.get("filed"), "start": x.get("start"), "end": x.get("end")})
     points.sort(key=lambda x: (x.get("filed") or "", x.get("end") or ""), reverse=True)
     return points
 
 
 def _annual_pair(facts, tags, unit="USD"):
-    annual, seen = [], set()
+    annual_by_end = {}
     for x in _fact_points(facts, tags, unit):
-        if x.get("form", "").startswith("10-K") and x.get("fp") in {"FY", None} and x.get("end") not in seen:
-            seen.add(x.get("end"))
-            annual.append(x)
-    return annual[:2]
+        if not x.get("form", "").startswith("10-K") or x.get("fp") not in {"FY", None}:
+            continue
+        try:
+            duration = (datetime.fromisoformat(x["end"]) - datetime.fromisoformat(x["start"])).days
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not 330 <= duration <= 380:
+            continue
+        end = x["end"]
+        if end not in annual_by_end or (x.get("filed") or "") > (annual_by_end[end].get("filed") or ""):
+            annual_by_end[end] = x
+    return [annual_by_end[k] for k in sorted(annual_by_end, reverse=True)[:2]]
 
 
 def sec_fundamentals(ticker):
@@ -481,11 +521,12 @@ def sec_fundamentals(ticker):
     liab = _fact_points(data, ["Liabilities"])
     cash = _fact_points(data, ["CashAndCashEquivalentsAtCarryingValue","CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"])
     eps = _annual_pair(data, ["EarningsPerShareDiluted","EarningsPerShareBasic"], "USD/shares")
-    growth = (rev[0]["v"] / rev[1]["v"] - 1) * 100 if len(rev) >= 2 and rev[1]["v"] else None
-    ig = (ni[0]["v"] / ni[1]["v"] - 1) * 100 if len(ni) >= 2 and ni[1]["v"] else None
-    fcf = ocf[0]["v"] - (capex[0]["v"] if capex else 0) if ocf else None
+    growth = (rev[0]["v"] / rev[1]["v"] - 1) * 100 if len(rev) >= 2 and rev[1]["v"] > 0 else None
+    ig = (ni[0]["v"] / ni[1]["v"] - 1) * 100 if len(ni) >= 2 and ni[1]["v"] > 0 else None
+    capex_by_end = {x["end"]: x["v"] for x in capex}
+    fcf = ocf[0]["v"] - capex_by_end[ocf[0]["end"]] if ocf and ocf[0]["end"] in capex_by_end else None
     result = {
-        "available": True,
+        "available": bool(rev or ni or ocf or assets or liab or cash),
         "name": ident["name"],
         "revenue": rev[0]["v"] if rev else None,
         "revenue_growth_pct": growth,
@@ -528,9 +569,12 @@ def gdelt_news(query_text, max_records=20, timespan="7d"):
             continue
         seen.add(title.lower())
         domain = (a.get("domain") or urlparse(url).netloc).lower().replace("www.", "")
+        stamp = a.get("seendate")
+        if isinstance(stamp, str) and re.fullmatch(r"\d{8}T\d{6}Z", stamp):
+            stamp = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).isoformat()
         out.append({
             "title": title, "url": url, "publisher": domain, "domain": domain,
-            "published": a.get("seendate"), "source": "gdelt", "source_country": a.get("sourcecountry"),
+            "published": stamp, "source": "gdelt", "source_country": a.get("sourcecountry"),
         })
     disk_cache_put(f"gdelt:{query_text.lower()}:{max_records}:{timespan}", out)
     return cache_put(key, out)
@@ -576,12 +620,21 @@ def yahoo_news_search(query_text, max_records=20):
 
 
 def fast_news(query_text, max_records=24, deep=False):
-    primary = yahoo_news_search(query_text, min(max_records, 24))
+    primary_error = None
+    try:
+        primary = yahoo_news_search(query_text, min(max_records, 24))
+    except Exception as exc:
+        primary_error = exc
+        primary = []
     merged = list(primary)
-    # GDELT is slower, so only use it when the fast feed is thin or lacks source diversity.
-    diversity = len({str(x.get("publisher") or "").lower() for x in primary if x.get("publisher")})
-    if len(primary) < 8 or (deep and diversity < 3):
-        extra = gdelt_news(query_text, 12 if deep else 10, "7d")
+    # Avoid blocking an otherwise usable news feed on a slow fallback provider.
+    if len(primary) < 3:
+        try:
+            extra = gdelt_news(query_text, 12 if deep else 10, "7d")
+        except Exception as exc:
+            if primary_error is not None:
+                raise RuntimeError("All free news providers are unavailable") from exc
+            extra = []
         seen = {str(x.get("title") or "").lower() for x in merged}
         for item in extra:
             key = str(item.get("title") or "").lower()
@@ -627,11 +680,27 @@ def _same_event(a, b):
     return overlap >= .48 or (len(ta & tb) >= 4 and overlap >= .35)
 
 
+def _risk_term_applies(title, term):
+    if term == "default" and not re.search(
+        r"\b(?:debt|bond|loan|payment|sovereign|credit) default\b|\bdefault(?:ed|s)? on\b|\bin default\b", title
+    ):
+        return False
+    for match in re.finditer(r"(?<!\w)" + re.escape(term) + r"(?!\w)", title):
+        preceding = title[max(0, match.start() - 85):match.start()]
+        if re.search(
+            r"\b(?:no|without|denies|denied|deny|rejects|dismisses|disproves|exonerated|cleared)"
+            r"(?:[\W_]+\w+){0,3}[\W_]*$", preceding
+        ):
+            continue
+        return True
+    return False
+
+
 def classify_news_item(item):
     title = (item.get("title") or "").lower()
     local, hits = 0, []
     for term, pts in RISK_TERMS.items():
-        if term in title:
+        if _risk_term_applies(title, term):
             local += pts; hits.append(term)
     for term, pts in POS_TERMS.items():
         if term in title:
@@ -666,13 +735,13 @@ def news_score(items):
         primary = any(x.get("source") == "sec" or (x.get("domain") or "").lower().endswith("sec.gov") for x in cluster)
         max_rel = max((x.get("reliability", 0) for x in cluster), default=0)
         if primary:
-            confirmation, factor = "PRIMARY-SOURCE CONFIRMED", 1.15
+            confirmation, factor = "PRIMARY-SOURCE CONFIRMED", 1.0
         elif len(sources) >= 2:
-            confirmation, factor = "MULTIPLE SOURCES", 1.08
+            confirmation, factor = "MULTIPLE OUTLETS / UNVERIFIED", .74
         elif max_rel >= 85:
-            confirmation, factor = "SINGLE RELIABLE SOURCE", .92
+            confirmation, factor = "REPORTED / UNVERIFIED", .74
         else:
-            confirmation, factor = "UNVERIFIED / LOW DIVERSITY", .64
+            confirmation, factor = "UNVERIFIED / LOW DIVERSITY", .55
         representative = max(cluster, key=lambda x: abs(x.get("risk_points", 0)))
         raw = representative.get("risk_points", 0)
         adjusted = raw * factor
@@ -680,13 +749,13 @@ def news_score(items):
         elif adjusted < 0: bull_values.append(abs(adjusted))
         event = {
             "id": f"E{idx}", "type": representative.get("event_type", "GENERAL"), "title": representative.get("title"),
-            "confirmation": confirmation, "independent_sources": len(sources), "reliability": max_rel,
+            "confirmation": confirmation, "outlet_count": len(sources), "reliability": max_rel,
             "impact": representative.get("impact"), "sentiment": representative.get("sentiment"),
             "risk_points": round(adjusted, 1), "articles": len(cluster),
         }
         events.append(event)
         for x in cluster:
-            x.update({"event_id": event["id"], "confirmation": confirmation, "independent_sources": len(sources)})
+            x.update({"event_id": event["id"], "confirmation": confirmation, "outlet_count": len(sources)})
 
     risk_values.sort(reverse=True); bull_values.sort(reverse=True)
     decay = (1.0, .58, .34, .20, .12)
@@ -696,7 +765,8 @@ def news_score(items):
     reasons = sorted([x for x in annotated if abs(x["risk_points"]) >= 4], key=lambda x: abs(x["risk_points"]), reverse=True)[:10]
     events.sort(key=lambda x: abs(x["risk_points"]), reverse=True)
     return {"score": round(total), "reasons": reasons, "events": events[:12], "items": annotated,
-            "event_count": len(events), "confirmed_event_count": len([e for e in events if e["confirmation"] != "UNVERIFIED / LOW DIVERSITY"])}
+            "available": bool(annotated), "event_count": len(events),
+            "confirmed_event_count": len([e for e in events if e["confirmation"] == "PRIMARY-SOURCE CONFIRMED"])}
 
 
 def yahoo_earnings_calendar(ticker):
@@ -972,8 +1042,12 @@ def market_regime():
     cached = cache_get(key, 300)
     if cached: return cached
     try:
-        sp = indicators(yahoo_chart("^GSPC", "1y")["rows"])
-        vx = indicators(yahoo_chart("^VIX", "6mo")["rows"])
+        sp_rows = yahoo_chart("^GSPC", "1y")["rows"]
+        vx_rows = yahoo_chart("^VIX", "6mo")["rows"]
+        if history_stale(sp_rows) or history_stale(vx_rows):
+            raise ValueError("Market benchmark history is stale")
+        sp = indicators(sp_rows)
+        vx = indicators(vx_rows)
         vix = vx.get("price") or 20
         trend = sp.get("trend_score_raw", 0)
         m1 = sp.get("momentum_1m") or 0
@@ -997,7 +1071,10 @@ def relative_strength(ticker, ind):
     benchmark = SECTOR_BENCHMARKS.get(clean_ticker(ticker), "^GSPC")
     label_name = dict(SECTORS).get(benchmark, "S&P 500") if benchmark != "^GSPC" else "S&P 500"
     try:
-        b = indicators(yahoo_chart(benchmark, "1y")["rows"])
+        benchmark_rows = yahoo_chart(benchmark, "1y")["rows"]
+        if history_stale(benchmark_rows):
+            raise ValueError("Relative-strength benchmark history is stale")
+        b = indicators(benchmark_rows)
         d1 = (ind.get("momentum_1m") or 0) - (b.get("momentum_1m") or 0)
         d3 = (ind.get("momentum_3m") or 0) - (b.get("momentum_3m") or 0)
         score = round(clamp(50 + d1 * 2.2 + d3 * .7))
@@ -1090,7 +1167,12 @@ def evaluate_thesis(tags, pkg):
         elif tag=="momentum": valid=s.get("momentum",0)>=60; detail=f"Momentum {s.get('momentum',0)}/100"
         elif tag=="catalyst":
             bullish=[e for e in ns.get("events",[]) if e.get("sentiment")=="BULLISH" and e.get("impact") in ("MEDIUM","HIGH")]
-            valid=bool(bullish); detail=f"{len(bullish)} confirmed/meaningful bullish event(s)" if bullish else "No meaningful bullish event currently detected"
+            confirmed=[e for e in bullish if e.get("confirmation")=="PRIMARY-SOURCE CONFIRMED"]
+            valid=True if confirmed else None if bullish or ns.get("available") is False else False
+            detail=(f"{len(confirmed)} primary-source confirmed bullish event(s)" if confirmed else
+                    "Bullish reports found, but independent primary confirmation is unavailable" if bullish else
+                    "News evidence unavailable" if ns.get("available") is False else
+                    "No meaningful bullish event currently detected")
         items.append({"tag":tag,"label":THESIS_TAGS[tag],"valid":valid,"detail":detail})
     known=[x for x in items if x["valid"] is not None]; good=len([x for x in known if x["valid"]]); bad=len(known)-good
     score=round(good/len(known)*100) if known else None
@@ -1184,7 +1266,9 @@ def basic_stock(ticker, range_="1y"):
             "currency": chart["meta"].get("currency") or "USD", "exchange": chart["meta"].get("exchangeName"),
             "day_low": last.get("low"), "day_high": last.get("high"), "volume": last.get("volume"),
             "fifty_two_low": ind.get("low52"), "fifty_two_high": ind.get("high52"),
-            "updated_at": now_iso(), "data_note": "Free best-effort market data; not exchange-grade real-time.",
+            "updated_at": last.get("time"), "retrieved_at": now_iso(),
+            "stale": history_stale(chart["rows"]),
+            "data_note": "Price as of the last observed chart bar; delayed or stale free market data, not a live quote.",
         },
         "indicators": ind, "price_model": pm, "scores": s, "exit_risk": exit_risk(s, 0, ind),
         "history": chart["rows"][-260:],
@@ -1231,9 +1315,8 @@ def research_package(ticker, use_ai=False):
     key = ("research_core_v05", ticker)
     cached = cache_get(key, 300)
     if cached:
-        cached["research_history"] = research_history(ticker, 10)
-        cached["research_change"] = research_change_summary(cached["research_history"])
-        return cached
+        history = research_history(ticker, 10)
+        return {**cached, "research_history": history, "research_change": research_change_summary(history)}
     base = basic_stock(ticker)
     name = base["quote"]["name"] or ticker
     results = {}
@@ -1261,6 +1344,11 @@ def research_package(ticker, use_ai=False):
     ex = exit_risk(s, ns["score"], base["indicators"], th.get("damage",0))
     core=core_summary(base["indicators"], fund, ns, s, ex, regime, relative, earnings)
     decision=decision_layer(base["indicators"],fund,ns,s,ex,regime,relative,earnings)
+    if base["quote"].get("stale"):
+        core["status"] = "DATA STALE"
+        core["summary"] = "Observed market price is stale. Entry and exit signals are historical and unavailable for current decisions."
+        decision["entry_label"] = "UNAVAILABLE / STALE PRICE"
+        decision["why_not_buy"].insert(0, "Latest price data is stale; wait for refreshed market observations.")
     base.update({
         "fundamentals": fund, "filings": filings, "news": news, "news_risk": ns, "scores": s, "exit_risk": ex,
         "price_model": price_model(base["indicators"]), "market_regime":regime,"relative_strength":relative,"earnings":earnings,
@@ -1275,7 +1363,7 @@ def research_package(ticker, use_ai=False):
             "status": "READY ON DEMAND" if get_setting("ollama_enabled", "false") == "true" else "CORE RESEARCH",
             "summary": "Ollama is optional and never blocks Core Research." if get_setting("ollama_enabled", "false") == "true" else "Ollama is disabled. Core Research remains fully active.",
             "confidence": s["confidence"]},
-        "freshness": {"market": base["quote"].get("updated_at"), "research": now_iso(), "news": now_iso(), "sec_fiscal_end": fund.get("latest_fiscal_end"), "latest_filing": next((x.get("date") for x in filings if x.get("date")), None)},
+        "freshness": {"market": base["quote"].get("updated_at"), "research": now_iso(), "news": max((x.get("published") for x in news if x.get("published")), default=None), "sec_fiscal_end": fund.get("latest_fiscal_end"), "latest_filing": next((x.get("date") for x in filings if x.get("date")), None)},
         "performance": {"core_cached_seconds": 300, "news_provider": "Yahoo Finance search + GDELT fallback", "staged": True},
     })
     save_research_snapshot(base)
@@ -1333,12 +1421,23 @@ def hunter_scan(symbols=None, limit=28):
     regime = market_regime()
     def one(t):
         b = basic_stock(t, "6mo"); ind = b["indicators"]; pm = b["price_model"]; sc = dict(b["scores"])
+        if b["quote"].get("stale"):
+            raise ValueError("Market history is stale; scan candidate unavailable")
         sc["entry"] = round(clamp(sc["entry"] + regime.get("entry_adjust",0)))
         sc["risk"] = round(clamp(sc["risk"] + regime.get("risk_adjust",0)))
         safety=100-sc["risk"]
         sc["opportunity"]=round(clamp(sc["quality"]*.28+sc["momentum"]*.18+sc["entry"]*.38+safety*.16))
+        knife = ind.get("falling_knife_risk",100)
+        stabilization = ind.get("stabilization_score",0)
+        gap = ind.get("gap_risk",100)
         if sc["entry"]<45 or pm.get("overextension_risk",0)>=65: sc["opportunity"]=min(sc["opportunity"],58)
-        status = "STRONG SETUP" if sc["opportunity"] >= 72 and sc["entry"] >= 68 and sc["risk"] < 48 and pm.get("overextension_risk", 100) < 45 else "WAIT FOR PULLBACK" if sc["opportunity"] >= 58 and (sc["entry"] < 60 or pm.get("overextension_risk", 0) >= 45) else "HIGH RISK" if sc["risk"] >= 65 else "RESEARCH" if sc["opportunity"] >= 56 else "WATCH"
+        if knife>=55: sc["opportunity"]=min(sc["opportunity"],50)
+        if knife>=35 or gap>=40 or (ind.get("trend_score_raw",0)<0 and stabilization<45):
+            sc["opportunity"]=min(sc["opportunity"],55)
+        strong = (sc["opportunity"] >= 72 and sc["entry"] >= 68 and sc["risk"] < 48
+                  and pm.get("overextension_risk",100) < 45 and knife < 35 and gap < 30
+                  and stabilization >= 45 and pm.get("risk_reward",0) >= 1.25)
+        status = "STRONG SETUP" if strong else "HIGH RISK" if sc["risk"] >= 65 or knife>=55 else "WAIT FOR PULLBACK" if sc["opportunity"] >= 55 and (sc["entry"] < 60 or pm.get("overextension_risk",0) >= 45 or knife >= 35 or stabilization < 45) else "RESEARCH" if sc["opportunity"] >= 56 else "WATCH"
         return {"ticker":t,"name":b["quote"]["name"],"price":b["quote"]["price"],"change_percent":b["quote"]["change_percent"],
             "scores":sc,"status":status,"sector":sector_info(t),"indicators":{k:ind.get(k) for k in ("rsi14","relative_volume","momentum_1m","momentum_3m","volatility20","drawdown52","avg_volume20","gap_risk","falling_knife_risk")},
             "why":("Healthy entry + controlled risk" if status=="STRONG SETUP" else "Extended; wait for better price" if status=="WAIT FOR PULLBACK" else "Risk elevated" if status=="HIGH RISK" else "Needs deeper evidence"),
@@ -1361,6 +1460,8 @@ def hunter_scan(symbols=None, limit=28):
 
 def quick_quote(symbol, name):
     b = basic_stock(symbol, "6mo")
+    if b["quote"].get("stale"):
+        raise ValueError("Market benchmark price is stale")
     return {"ticker": symbol, "name": name, "price": b["quote"]["price"], "change_percent": b["quote"]["change_percent"], "momentum_1m": b["indicators"].get("momentum_1m")}
 
 
@@ -1383,7 +1484,11 @@ def market_dashboard():
     order_i = {s:i for i,(s,_) in enumerate(INDEXES)}
     indexes.sort(key=lambda x: order_i.get(x["ticker"], 99))
     sectors.sort(key=lambda x: x.get("change_percent") if x.get("change_percent") is not None else -999, reverse=True)
-    broad_news = [classify_news_item(x) for x in fast_news("stock market", 16, False)]
+    try:
+        broad_news = [classify_news_item(x) for x in fast_news("stock market", 16, False)]
+    except Exception as exc:
+        broad_news = []
+        errors.append({"ticker": "NEWS", "error": str(exc)[:120]})
     result = {"indexes": indexes, "sectors": sectors, "news": broad_news[:12], "regime": market_regime(), "errors": errors, "updated_at": now_iso()}
     return cache_put(key, result)
 
@@ -1408,42 +1513,89 @@ def list_positions():
 
 
 def portfolio_risk():
-    positions = list_positions(); out = []
-    def one(p):
-        r = research_package(p["ticker"], False); price = r["quote"]["price"]; val = price * p["shares"]
-        pnl_dollar = (price - p["avg_price"]) * p["shares"]; pnl_pct = (price / p["avg_price"] - 1) * 100 if p["avg_price"] else 0
-        tags=parse_thesis_tags(p.get("thesis_json","[]")); th=evaluate_thesis(tags,r)
-        ex=exit_risk(r["scores"], r["news_risk"].get("score",0), r["indicators"], th.get("damage",0))
-        r["exit_risk"]=ex
-        strategy=position_strategy(p,r,th); reasons = r["news_risk"].get("reasons", [])[:4]
-        return {**p,"thesis_tags":tags,"price":price,"value":val,"pnl":pnl_dollar,"pnl_percent":pnl_pct,"exit_risk":ex,
-                "price_model":r["price_model"],"news_risk":r["news_risk"],"top_risk_news":reasons,"scores":r["scores"],
-                "thesis_health":th,"position_strategy":strategy,"earnings":r.get("earnings") or {}}
-    if positions:
-        with ThreadPoolExecutor(max_workers=min(6, len(positions))) as pool:
-            futs = {pool.submit(one, p): p for p in positions}
-            for f in as_completed(futs):
-                try: out.append(f.result())
-                except Exception as exc: out.append({**futs[f], "error": str(exc)})
-    total=sum(x.get("value",0) for x in out); total_cost=sum(p["shares"]*p["avg_price"] for p in positions); warnings=[]; sector_values={}; grouped={}
-    if total>0:
-        for x in out:
-            if x.get("value"):
-                pct=x["value"]/total*100; x["weight_percent"]=pct
-                sec=sector_info(x["ticker"])["sector"]; x["sector"]=sec; sector_values[sec]=sector_values.get(sec,0)+x["value"]
-                g=grouped.setdefault(x["ticker"],{"ticker":x["ticker"],"shares":0.0,"cost":0.0,"value":0.0,"lots":0})
-                g["shares"]+=x["shares"]; g["cost"]+=x["shares"]*x["avg_price"]; g["value"]+=x["value"]; g["lots"]+=1
-        for sec,val in sector_values.items():
-            pct=val/total*100
-            if pct>=45: warnings.append({"type":"SECTOR CONCENTRATION","ticker":sec,"percent":round(pct,1),"severity":"HIGH" if pct>=65 else "WATCH"})
-    grouped_rows=[]
-    for g in grouped.values():
-        if total and g["value"]/total*100>=30:
-            gpct=g["value"]/total*100; warnings.append({"type":"POSITION CONCENTRATION","ticker":g["ticker"],"percent":round(gpct,1),"severity":"HIGH" if gpct>=50 else "WATCH"})
-        g["avg_cost"]=g["cost"]/g["shares"] if g["shares"] else 0; g["pnl"]=g["value"]-g["cost"]; g["pnl_percent"]=(g["value"]/g["cost"]-1)*100 if g["cost"] else 0; grouped_rows.append(g)
-    out.sort(key=lambda x:(x.get("exit_risk") or {}).get("score",-1),reverse=True)
-    return {"positions":out,"grouped":sorted(grouped_rows,key=lambda x:x["value"],reverse=True),"sector_exposure":[{"sector":k,"value":v,"percent":round(v/total*100,1)} for k,v in sorted(sector_values.items(),key=lambda kv:kv[1],reverse=True)] if total else [],
-            "total_value":total,"total_cost":total_cost,"total_pnl":total-total_cost,"total_pnl_percent":((total/total_cost-1)*100 if total_cost else 0),"warnings":warnings,"updated_at":now_iso()}
+    positions = list_positions()
+    quotes, out, grouped, sector_values, warnings = {}, [], {}, {}, []
+    tickers = list(dict.fromkeys(p["ticker"] for p in positions))
+    if tickers:
+        with ThreadPoolExecutor(max_workers=min(6, len(tickers))) as pool:
+            futures = {pool.submit(research_package, ticker, False): ticker for ticker in tickers}
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    quotes[ticker] = (future.result(), None)
+                except Exception as exc:
+                    quotes[ticker] = (None, str(exc))
+
+    priced_value = priced_cost = total_cost = 0.0
+    unpriced_lots = 0
+    for p in positions:
+        ticker = p["ticker"]
+        cost = p["shares"] * p["avg_price"]
+        total_cost += cost
+        group = grouped.setdefault(ticker, {"ticker": ticker, "shares": 0.0, "cost": 0.0, "value": 0.0, "lots": 0, "unpriced_lots": 0})
+        group["shares"] += p["shares"]
+        group["cost"] += cost
+        group["lots"] += 1
+        research, fetch_error = quotes[ticker]
+        try:
+            if fetch_error:
+                raise ValueError(fetch_error)
+            if research["quote"].get("stale"):
+                raise ValueError("Market quote is stale; valuation and exit assessment unavailable")
+            price = positive_number(research["quote"]["price"], "Market price")
+            value = price * p["shares"]
+            if not math.isfinite(value):
+                raise ValueError("Market value exceeds numeric range")
+            tags = parse_thesis_tags(p.get("thesis_json", "[]"))
+            thesis = evaluate_thesis(tags, research)
+            ex = exit_risk(research["scores"], research["news_risk"].get("score", 0), research["indicators"], thesis.get("damage", 0))
+            strategy = position_strategy(p, {**research, "exit_risk": ex}, thesis)
+            sector = sector_info(ticker)["sector"]
+            sector_values[sector] = sector_values.get(sector, 0.0) + value
+            priced_cost += cost
+            priced_value += value
+            group["value"] += value
+            out.append({**p, "thesis_tags": tags, "price": price, "value": value,
+                "pnl": value - cost, "pnl_percent": (price / p["avg_price"] - 1) * 100,
+                "exit_risk": ex, "price_model": research["price_model"],
+                "news_risk": research["news_risk"], "top_risk_news": research["news_risk"].get("reasons", [])[:4],
+                "scores": research["scores"], "thesis_health": thesis, "position_strategy": strategy,
+                "earnings": research.get("earnings") or {}, "sector": sector})
+        except Exception as exc:
+            unpriced_lots += 1
+            group["unpriced_lots"] += 1
+            out.append({**p, "error": str(exc), "price": None, "value": None, "pnl": None, "pnl_percent": None})
+
+    complete = unpriced_lots == 0
+    total = priced_value if complete else None
+    grouped_rows = []
+    for group in grouped.values():
+        group["avg_cost"] = group["cost"] / group["shares"] if group["shares"] else None
+        if group["unpriced_lots"]:
+            group["value"] = group["pnl"] = group["pnl_percent"] = None
+        else:
+            group["pnl"] = group["value"] - group["cost"]
+            group["pnl_percent"] = (group["value"] / group["cost"] - 1) * 100 if group["cost"] else None
+        if complete and total and group["value"] / total * 100 >= 30:
+            pct = group["value"] / total * 100
+            warnings.append({"type": "POSITION CONCENTRATION", "ticker": group["ticker"], "percent": round(pct, 1), "severity": "HIGH" if pct >= 50 else "WATCH"})
+        grouped_rows.append(group)
+    if complete and total:
+        for item in out:
+            item["weight_percent"] = item["value"] / total * 100
+        for sector, value in sector_values.items():
+            pct = value / total * 100
+            if pct >= 45:
+                warnings.append({"type": "SECTOR CONCENTRATION", "ticker": sector, "percent": round(pct, 1), "severity": "HIGH" if pct >= 65 else "WATCH"})
+    out.sort(key=lambda item: (item.get("exit_risk") or {}).get("score", -1), reverse=True)
+    return {
+        "positions": out, "grouped": sorted(grouped_rows, key=lambda g: g["value"] if g["value"] is not None else -1, reverse=True),
+        "sector_exposure": [{"sector": k, "value": v, "percent": round(v / total * 100, 1)} for k, v in sorted(sector_values.items(), key=lambda x: x[1], reverse=True)] if complete and total else [],
+        "total_value": total, "total_cost": total_cost, "total_pnl": total - total_cost if complete else None,
+        "total_pnl_percent": (total / total_cost - 1) * 100 if complete and total_cost else (0 if complete else None),
+        "priced_market_value": priced_value, "priced_cost": priced_cost, "unpriced_lots": unpriced_lots,
+        "valuation_complete": complete, "warnings": warnings, "updated_at": now_iso(),
+    }
 
 def alerts_payload():
     risk = portfolio_risk()
@@ -1588,15 +1740,16 @@ class Handler(BaseHTTPRequestHandler):
                 return send_json(self, hunter_scan(body.get("symbols"), body.get("limit", 28)))
             if p == "/api/positions":
                 t = clean_ticker(body.get("ticker"))
-                sh = float(body.get("shares") or 0)
-                ap = float(body.get("avg_price") or 0)
-                if sh <= 0 or ap <= 0:
-                    raise ValueError("Shares and average price must be positive")
+                sh = positive_number(body.get("shares"), "Shares")
+                ap = positive_number(body.get("avg_price"), "Average price")
+                if not math.isfinite(sh * ap):
+                    raise ValueError("Position cost exceeds numeric range")
                 with DB_LOCK, connect() as con:
                     tags = parse_thesis_tags(body.get("thesis_tags") or [])
                     cur = con.execute("INSERT INTO positions(ticker,shares,avg_price,thesis,thesis_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (t, sh, ap, str(body.get("thesis") or ""), json.dumps(tags), now_iso(), now_iso()))
                     con.commit()
                     row = con.execute("SELECT * FROM positions WHERE id=?", (cur.lastrowid,)).fetchone()
+                invalidate_research(t)
                 return send_json(self, dict(row), 201)
             return send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
@@ -1607,14 +1760,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p=urlparse(self.path).path; body=read_body(self)
             if p.startswith("/api/positions/"):
-                pid=int(p.rsplit("/",1)[1]); t=clean_ticker(body.get("ticker")); sh=float(body.get("shares") or 0); ap=float(body.get("avg_price") or 0)
-                if sh<=0 or ap<=0: raise ValueError("Shares and average price must be positive")
+                pid=int(p.rsplit("/",1)[1]); t=clean_ticker(body.get("ticker"))
+                sh=positive_number(body.get("shares"), "Shares"); ap=positive_number(body.get("avg_price"), "Average price")
+                if not math.isfinite(sh * ap): raise ValueError("Position cost exceeds numeric range")
                 tags=parse_thesis_tags(body.get("thesis_tags") or [])
                 with DB_LOCK, connect() as con:
-                    exists=con.execute("SELECT id FROM positions WHERE id=?",(pid,)).fetchone()
+                    exists=con.execute("SELECT id,ticker FROM positions WHERE id=?",(pid,)).fetchone()
                     if not exists: raise ValueError("Position not found")
                     con.execute("UPDATE positions SET ticker=?,shares=?,avg_price=?,thesis=?,thesis_json=?,updated_at=? WHERE id=?",(t,sh,ap,str(body.get("thesis") or ""),json.dumps(tags),now_iso(),pid)); con.commit()
                     row=con.execute("SELECT * FROM positions WHERE id=?",(pid,)).fetchone()
+                invalidate_research(exists["ticker"], t)
                 return send_json(self,dict(row))
             return send_json(self,{"error":"Not found"},404)
         except Exception as exc:
@@ -1626,7 +1781,10 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/api/positions/"):
                 pid = int(p.rsplit("/", 1)[1])
                 with DB_LOCK, connect() as con:
+                    old = con.execute("SELECT ticker FROM positions WHERE id=?", (pid,)).fetchone()
                     con.execute("DELETE FROM positions WHERE id=?", (pid,)); con.commit()
+                if old:
+                    invalidate_research(old["ticker"])
                 return send_json(self, {"ok": True})
             return send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
