@@ -94,12 +94,15 @@ function bindUpdateControls(){
 function watchUpdateRestart(){
     let wasDown=false;
     let elapsed=0;
+    const started=Date.now();
     const timer=setInterval(async()=>{
         elapsed+=1;
         if(elapsed>90){clearInterval(timer);return}
         try{
             await api('/api/health');
-            if(wasDown){clearInterval(timer);window.location.reload()}
+            const state=await api('/api/updates/status');
+            const finished=state.last_result && Date.parse(state.last_result.time)>=started-1000;
+            if(wasDown||finished){clearInterval(timer);window.location.reload()}
         }catch(e){wasDown=true}
     },1000);
 }
