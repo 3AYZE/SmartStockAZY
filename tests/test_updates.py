@@ -197,5 +197,75 @@ class UpdaterTests(unittest.TestCase):
         self.assertNotIn("SECRET_FAKE", json.dumps(manager.status()))
 
 
+class UpdateApiTests(unittest.TestCase):
+    def setUp(self):
+        import http.client
+        import importlib.machinery
+        import importlib.util
+        import threading
+        from http.server import ThreadingHTTPServer
+
+        source = Path(__file__).resolve().parents[1] / "StonkResearch.pyw"
+        loader = importlib.machinery.SourceFileLoader("stock_update_api_test", str(source))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        self.app = importlib.util.module_from_spec(spec)
+        loader.exec_module(self.app)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.app.Handler)
+        self.old_port = self.app.PORT
+        self.app.PORT = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        self.app.PORT = self.old_port
+
+    def request(self, method, path, payload=None, origin=None):
+        import http.client
+        port = self.server.server_address[1]
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {"Content-Type": "application/json", "Host": f"127.0.0.1:{port}"}
+        if origin:
+            headers["Origin"] = origin
+        try:
+            conn.request(method, path,
+                         body=json.dumps(payload).encode() if payload is not None else None,
+                         headers=headers)
+            response = conn.getresponse()
+            return response.status, json.loads(response.read().decode("utf-8"))
+        finally:
+            conn.close()
+
+    def test_update_check_returns_async_state_without_installing(self):
+        with patch.object(self.app.UPDATE_MANAGER, "check",
+                          return_value={"status": "checking"}), \
+             patch.object(self.app.UPDATE_MANAGER, "status",
+                          return_value={"status": "checking", "available": False}):
+            code, data = self.request("GET", "/api/updates/check?force=1")
+        self.assertEqual(code, 200)
+        self.assertEqual(data["status"], "checking")
+
+    def test_update_download_requires_local_origin(self):
+        with patch.object(self.app.UPDATE_MANAGER, "download",
+                          return_value={"status": "downloading"}) as download:
+            code, data = self.request("POST", "/api/updates/download",
+                                      {}, origin="https://evil.example")
+        self.assertEqual(code, 403)
+        self.assertIn("blocked", data["error"])
+        download.assert_not_called()
+
+    def test_update_download_with_same_origin_is_opt_in(self):
+        with patch.object(self.app.UPDATE_MANAGER, "download",
+                          return_value={"status": "downloading"}) as download:
+            port = self.server.server_address[1]
+            code, data = self.request("POST", "/api/updates/download",
+                                      {}, origin=f"http://127.0.0.1:{port}")
+        self.assertEqual(code, 200)
+        self.assertEqual(data["status"], "downloading")
+        download.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()
