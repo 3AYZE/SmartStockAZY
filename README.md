@@ -60,3 +60,33 @@ Double-click:
 ## Important
 
 This is a research tool, not a broker or financial adviser. Free market/news/calendar sources can be delayed, incomplete, rate-limited, or unavailable. Entry, trailing-exit, take-profit, and risk levels are model-generated research references, not guarantees. Automatic buying/selling is never enabled.
+
+## Audit hardening on review branch (2026-11-21)
+
+The codex/stock-research-audit-v050 review branch improves reliability while preserving the v0.5.0 interfaces and the existing zero-dependency Windows application. It is **not a published release**.
+
+- Current prices use the time of the source observation. Stale or missing prices display as unavailable for current valuations, entry/exit signals, and portfolio P/L.
+- Portfolio positions with the same ticker share one research request, while keeping their own cost basis. Grouped holdings use weighted average cost; an incomplete valuation is clearly marked.
+- SEC annual metrics use full-year periods; free cash flow is computed only when operating cash flow and capital expenditures refer to matching fiscal ends.
+- News and market feeds tolerate partial outages. News outlet counts are no longer presented as proof of independent confirmation; a bullish headline alone cannot confirm a catalyst thesis.
+- Stonk Hunter applies more conservative falling-knife, gap-chase and risk/reward gates. These are unbacktested heuristics.
+- Page, news, research and chart responses are checked before updating the interface to prevent late results from replacing a newer selection.
+
+### Verification on this branch
+
+From the project directory, use:
+
+    python -m unittest discover -s tests -v
+    node --test tests/test_ui.js
+    node --check app.js
+    python tests/benchmark_portfolio.py
+
+Node.js is needed for JavaScript tests only, **not to run the application**. Python tests use mocked network providers and temporary SQLite files; they do not open your personal stonk.db. The synthetic benchmark compares the current working copy to main using simulated provider delays. See docs/audit-report.md for the dated results, outstanding risks, and manual Windows checks.
+
+### Back up your portfolio data before updating
+
+Close the app fully first. Back up stonk.db **along with any existing stonk.db-wal and stonk.db-shm files** (or use SQLite's online backup mechanism while open). The DB uses write-ahead logging, and copying just the main file while the app is open could omit recent changes. The migration retains existing rows and only adds missing legacy columns to positions. If migration fails, it now reports an error rather than silently proceeding.
+
+### Accuracy and launch limitations
+
+This app uses free, best-effort market and news sources. Source timestamps and UNKNOWN/UNAVAILABLE labels reduce misleading output but do not ensure exchange-grade price freshness or investment accuracy. Signals have not been calibrated by historical backtests. Windows UI, all controls, and live source-provider resilience still require manual verification before release.
