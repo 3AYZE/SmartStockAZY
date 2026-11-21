@@ -39,6 +39,11 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_HOSTS = {"api.github.com", "codeload.github.com", "github.com"}
 
 
+class RollbackIncomplete(RuntimeError):
+    """Installation could not be restored; do not start mixed application files."""
+
+
+
 def git_blob(data: bytes) -> str:
     header = b"blob " + str(len(data)).encode("ascii") + b"\0"
     return hashlib.sha1(header + data).hexdigest()
@@ -305,6 +310,7 @@ def apply_stage(stage: Path, root: Path, wait_pid=0, restart=False) -> Path:
                 temporary.unlink(missing_ok=True)
         _write_result(True, "Application files updated successfully", manifest["sha"])
     except Exception as exc:
+        rollback_errors = []
         for name in reversed(replaced):
             try:
                 if original[name]:
@@ -313,9 +319,15 @@ def apply_stage(stage: Path, root: Path, wait_pid=0, restart=False) -> Path:
                     os.replace(restore, root / name)
                 else:
                     (root / name).unlink(missing_ok=True)
-            except OSError:
-                pass
-        _write_result(False, "Update failed; original files restored where possible: " + str(exc))
+            except OSError as restore_error:
+                rollback_errors.append(name + ": " + str(restore_error))
+        if rollback_errors:
+            failure = ("UPDATE AND ROLLBACK FAILED. Do not launch this installation. "
+                       "Restore files from " + str(backup) + ". Errors: "
+                       + "; ".join(rollback_errors))
+            _write_result(False, failure)
+            raise RollbackIncomplete(failure) from exc
+        _write_result(False, "Update failed; original application files restored: " + str(exc))
         raise
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -445,8 +457,9 @@ def _main():
         apply_stage(stage, root, wait_pid=pid, restart=restart)
     except Exception as exc:
         _write_result(False, "Update failed: " + str(exc))
-        # Start the restored build so the application remains usable.
-        _launch_app(root)
+        # Never execute an installation containing a mixture of program versions.
+        if not isinstance(exc, RollbackIncomplete):
+            _launch_app(root)
 
 
 if __name__ == "__main__":
