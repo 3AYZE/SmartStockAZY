@@ -59,6 +59,9 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
     ollama_url: 'http://localhost:11434', ollama_model: 'auto', sec_user_agent: 'QA Fixture'};
   let updateState = {status: 'available', message: 'QA fixture update available', latest_sha: 'sample'};
   let dashboardFailure = false;
+  let missingConfidence = false;
+  let deferResearch = false;
+  const pendingResearch = [];
   const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
     let body = '';
@@ -83,9 +86,21 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
         news: [{title: 'Sample market headline (fixture)', publisher: 'QA fixture',
           reliability: 85, impact: 'MEDIUM', url: 'https://example.com'}]});
     if (pathname === '/api/hunter') return send(hunter);
-    if (pathname.startsWith('/api/stock/') || pathname.startsWith('/api/research/'))
+    if (pathname.startsWith('/api/stock/'))
       return send(stock(decodeURIComponent(pathname.split('/').pop())));
-    if (pathname.startsWith('/api/chart/')) return send({history: stock('NVDA').history});
+    if (pathname.startsWith('/api/research/')) {
+      if (deferResearch) await new Promise(resolve => pendingResearch.push(resolve));
+      const data = stock(decodeURIComponent(pathname.split('/').pop()));
+      if (missingConfidence) delete data.core_research.confidence;
+      return send(data);
+    }
+    if (pathname.startsWith('/api/chart/')) {
+      const range = new URL(req.url, 'http://localhost').searchParams.get('range');
+      return send({history: range === '1mo' ? Array.from({length: 6}, (_, i) => ({
+        date: `2026-11-${String(i + 1).padStart(2, '0')}`,
+        open: 145 + i, close: 146 + i, volume: 1000000 + 10000 * i,
+      })) : stock('NVDA').history});
+    }
     if (pathname.startsWith('/api/news-search/'))
       return send({items: [], resolved_query: decodeURIComponent(pathname.split('/').pop()),
         risk: {score: 0, events: [], confirmed_event_count: 0, event_count: 0}});
@@ -129,6 +144,13 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   const browser = await chromium.launch({headless: true, executablePath: edge});
   t.after(() => browser.close());
   const page = await browser.newPage({viewport: {width: 1440, height: 900}});
+  const capture = async (name, fullPage = false) => {
+    if (!process.env.SMARTSTOCK_SCREENSHOT_DIR) return;
+    fs.mkdirSync(process.env.SMARTSTOCK_SCREENSHOT_DIR, {recursive: true});
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({path: path.join(process.env.SMARTSTOCK_SCREENSHOT_DIR, name),
+      fullPage, animations: 'disabled'});
+  };
   const exceptions = [];
   page.on('pageerror', error => exceptions.push(error.message));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -137,10 +159,7 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.getByText('S&P 500').waitFor();
   assert.equal(await page.locator('.nav-link').count(), 4);
   assert.equal(await page.locator('#versionBadge').textContent(), 'v0.5.1');
-  if (process.env.SMARTSTOCK_SCREENSHOT_DIR) {
-    fs.mkdirSync(process.env.SMARTSTOCK_SCREENSHOT_DIR, {recursive: true});
-    await page.screenshot({path: path.join(process.env.SMARTSTOCK_SCREENSHOT_DIR, 'market.png'), fullPage: true});
-  }
+  await capture('market.png');
   await page.locator('#quickHunter').click();
   await page.locator('.hunter-row').first().waitFor();
   assert.equal(await page.locator('#hunterStats .metric-card').count(), 5);
@@ -148,8 +167,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.getByRole('button', {name: 'Low Risk'}).click();
   assert.equal(await page.locator('.hunter-row').count(), 1);
   await page.getByRole('button', {name: 'All', exact: true}).click();
+  await page.evaluate(() => {window.__qaHunterSearch = document.querySelector('#hunterSearch')});
   await page.locator('#hunterSearch').fill('MSFT');
   assert.equal(await page.locator('.hunter-row').count(), 1);
+  assert.equal(await page.evaluate(() => document.activeElement === window.__qaHunterSearch), true);
+  assert.equal(await page.evaluate(() => document.querySelector('#hunterSearch') === window.__qaHunterSearch), true);
   await page.locator('#hunterSearch').fill('');
   await page.locator('#hunterAdvanced summary').click();
   await page.locator('#hunterMinOpp').fill('70');
@@ -159,10 +181,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#hunterMinOpp').dispatchEvent('change');
   await page.locator('[data-sort="price"]').click();
   assert.match(await page.locator('[data-sort="price"]').locator('xpath=..').getAttribute('aria-sort'), /descending/);
+  assert.equal(await page.locator('#hunterAdvanced').getAttribute('open'), '');
+  assert.equal(await page.evaluate(() => document.querySelector('#hunterSearch') === window.__qaHunterSearch), true);
   await page.locator('[data-details="NVDA"]').click();
   assert.equal(await page.locator('.hunter-detail').count(), 1);
-  if (process.env.SMARTSTOCK_SCREENSHOT_DIR)
-    await page.screenshot({path: path.join(process.env.SMARTSTOCK_SCREENSHOT_DIR, 'discover.png'), fullPage: true});
+  await capture('discover.png');
   await page.locator('[data-research="NVDA"]').click();
   await page.locator('.research-tabs').waitFor();
   await page.locator('.chart-wrap').waitFor();
@@ -170,18 +193,58 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   assert.notEqual(await page.locator('.js-chart-price').textContent(), '—');
   await page.locator('.range-btn[data-range="1mo"]').click();
   await page.locator('.range-btn.active[data-range="1mo"]').waitFor();
+  assert.equal(await page.locator('.chart-hover-meta > div:last-child b').textContent(), '6');
   await page.locator('[data-overlay="sma50"]').click();
   assert.equal(await page.locator('[data-overlay="sma50"]').getAttribute('class').then(x => x.includes('active')), true);
-  if (process.env.SMARTSTOCK_SCREENSHOT_DIR)
-    await page.screenshot({path: path.join(process.env.SMARTSTOCK_SCREENSHOT_DIR, 'research.png'), fullPage: true});
+  assert.equal(await page.locator('.chart-hover-meta > div:last-child b').textContent(), '6');
+  await capture('research.png');
+  if (process.env.SMARTSTOCK_SCREENSHOT_DIR) {
+    await page.locator('.chart-wrap').scrollIntoViewIfNeeded();
+    await page.screenshot({path: path.join(process.env.SMARTSTOCK_SCREENSHOT_DIR, 'research-chart.png'), animations: 'disabled'});
+  }
+  // Switching symbols from Research must update the heading and reset the old range.
+  await page.locator('#ticker').fill('MSFT');
+  await page.locator('#search').getByRole('button').click();
+  await page.getByRole('heading', {name: 'MSFT · Research'}).waitFor();
+  await page.locator('.range-btn.active[data-range="1y"]').waitFor();
+  assert.equal(await page.locator('.chart-hover-meta > div:last-child b').textContent(), '24');
+  await page.locator('#ticker').fill('NVDA');
+  await page.locator('#search').getByRole('button').click();
+  await page.getByRole('heading', {name: 'NVDA · Research'}).waitFor();
+  await page.locator('.research-tabs').waitFor();
+  await page.locator('.range-btn[data-range="1mo"]').click();
+  await page.locator('.range-btn.active[data-range="1mo"]').waitFor();
   await page.getByRole('tab', {name: 'Financials & SEC'}).click();
   await page.getByText('Sample SEC filing').waitFor();
   await page.getByRole('tab', {name: 'News & Events'}).click();
   await page.getByRole('tab', {name: 'History'}).click();
   await page.locator('.history-row').waitFor();
+  await page.getByRole('tab', {name: 'Overview'}).click();
+  assert.equal(await page.locator('.chart-hover-meta > div:last-child b').textContent(), '6');
+  assert.match(await page.locator('[data-overlay="sma50"]').getAttribute('class'), /active/);
+  assert.match(await page.locator('.range-btn.active').getAttribute('data-range'), /1mo/);
   await page.locator('#researchReturn').click();
   await page.locator('#hunterStats .metric-card').first().waitFor();
   assert.equal(await page.locator('.hunter-row').count(), 2);
+  assert.equal(await page.locator('#hunterAdvanced').getAttribute('open'), '');
+  assert.equal(await page.locator('.hunter-detail').count(), 1);
+  assert.match(await page.locator('[data-sort="price"]').locator('xpath=..').getAttribute('aria-sort'), /descending/);
+  // A missing confidence field must not be displayed as a measured zero.
+  missingConfidence = true;
+  await page.locator('[data-research="NVDA"]').click();
+  await page.getByText('Evidence confidence unavailable').waitFor();
+  await page.locator('#researchReturn').click();
+  missingConfidence = false;
+  // A slow research response must not overwrite another workspace.
+  deferResearch = true;
+  await page.locator('[data-research="NVDA"]').click();
+  await page.locator('#out .price-history-slot').waitFor();
+  await page.locator('[data-page="Market"]').click();
+  assert.equal(pendingResearch.length, 1);
+  deferResearch = false;
+  pendingResearch.splice(0).forEach(resolve => resolve());
+  await page.getByText('S&P 500').waitFor();
+  assert.equal(await page.locator('.research-header').count(), 0);
   await page.locator('[data-page="Portfolio"]').click();
   await page.locator('#positionEditor summary').click();
   await page.locator('#pt').fill('NVDA');
@@ -196,9 +259,12 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('.portfolio-summary').getByText('Lots').waitFor();
   await page.locator('[data-tab="Risk Monitor"]').click();
   await page.getByText('Portfolio Risk Defense').waitFor();
+  await capture('risk.png');
   await page.locator('[data-tab="Alerts"]').click();
   await page.getByText('Risk Alert Queue').waitFor();
+  await capture('alerts.png');
   await page.locator('[data-tab="Holdings"]').click();
+  await capture('holdings.png');
   page.once('dialog', dialog => dialog.accept());
   await page.locator('[data-del]').click();
   await page.getByText('No positions stored yet.').waitFor();
@@ -209,11 +275,12 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#checkUpdates').click();
   await page.locator('#downloadUpdate').click();
   await page.locator('#applyUpdate').waitFor({state: 'visible'});
+  await capture('settings.png');
   await page.reload();
   await page.locator('#settingsNav').click();
   assert.equal(await page.locator('#hm').inputValue(), '25');
-  for (const width of [1280, 1024, 840, 720, 480]) {
-    await page.setViewportSize({width, height: 850});
+  for (const [width, height] of [[1920, 1080], [1600, 900], [1366, 768], [1280, 720], [1024, 768], [840, 720], [720, 720], [480, 700]]) {
+    await page.setViewportSize({width, height});
     for (const section of ['Market', 'Discover', 'Research', 'Portfolio', 'Settings']) {
       if (section === 'Settings') await page.locator('#settingsNav').click();
       else await page.locator(`[data-page="${section}"]`).click();
@@ -224,6 +291,17 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
       }));
       assert.ok(size.scrollWidth <= size.innerWidth + 2, `${section} at ${width}px: ${JSON.stringify(size)}`);
       assert.ok(size.searchWidth > 60, `${section} at ${width}px: ${JSON.stringify(size)}`);
+      if (width === 480 && process.env.SMARTSTOCK_SCREENSHOT_DIR && ['Market', 'Discover', 'Research'].includes(section)) {
+        if (section === 'Discover') {
+          await page.locator('#runHunter').click();
+          await page.locator('.hunter-row').first().waitFor();
+        } else if (section === 'Research') {
+          await page.locator('#ticker').fill('NVDA');
+          await page.locator('#search').getByRole('button').click();
+          await page.locator('.research-tabs').waitFor();
+        }
+        await capture(`${section.toLowerCase()}-480.png`);
+      }
     }
   }
   await page.locator('[data-page="Market"]').click();

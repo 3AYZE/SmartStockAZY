@@ -28,6 +28,11 @@ Research also organizes **Financials & SEC**, **Technicals**, and **History** in
 - Preserved the in-app update notification, verified download stage, and explicit restart/install action under Settings.
 - Corrected a header clipping issue when the update notification is visible around 1024 px. Fixed Discover's fifth summary metric wrapping awkwardly by using adaptive grid columns.
 - Added a descriptive document title, accessible labels for the main navigation/search, and reduced-motion support.
+- Kept Discover's search input, advanced filter expansion, sort order, and selected row stable while filtering; updates replace only the results subtree instead of rebuilding the whole scanner workspace.
+- Fixed ticker changes within Research so the heading updates immediately and the newly selected ticker starts on the 1-year range. Existing range and overlay settings survive Research tab rerenders for the same ticker.
+- Retained up to 12 recently fetched ticker/range chart datasets so toggling an overlay or switching a Research tab does not silently fall back from a short-range chart to 1-year data.
+- Ignored late Research responses after leaving the workspace. Missing research confidence now displays an unavailable state rather than an inaccurate 0%.
+- Arranged the six Research decision cards in three columns on wide screens, two on medium screens, and one below 520 px.
 
 ## Consolidation and preserved behavior
 
@@ -52,9 +57,11 @@ Research also organizes **Financials & SEC**, **Technicals**, and **History** in
 - Python: `python -m unittest discover -s tests -q` — **36 passed**, with one non-fatal `ResourceWarning` during temporary HTTPError cleanup.
 - JavaScript: `node --test tests/test_ui.js tests/test_update_ui.js` — **15 passed**.
 - Browser fixture: `node --test tests/test_browser_ui.js` with `SMARTSTOCK_PLAYWRIGHT_CORE` pointing to an external `playwright-core` installation — **1 passed** in real headless Microsoft Edge. Fixture endpoints validate Market, Discover filters/sort, Research chart/range/overlay/SEC/history, Holdings CRUD, Risk Monitor, Alerts, settings persistence, update-check/download UI flow, and an offline market error.
-- Browser resize checks: **1280, 1024, 840, 720, and 480 px**, across **Market, Discover, Research, Portfolio, Settings**; no document-level horizontal overflow detected and global ticker search remained usable.
-- `node --check app.js` and `git diff --check` — passed.
-- Screenshots: [Market](ui-screenshots/market.png), [Discover](ui-screenshots/discover.png), [Research](ui-screenshots/research.png). **Screenshots contain simulated fixture quotes and headlines**. They are not claims about market prices or provider availability.
+- Browser regression additionally checks scanner input focus/DOM identity, expanded filter state, short-range chart persistence after overlay toggles, in-place ticker switch and range reset, missing research confidence, and stale Research requests after navigation.
+- Browser resize checks: **1920×1080, 1600×900, 1366×768, 1280×720, 1024×768, 840×720, 720×720, and 480×700**, across **Market, Discover, Research, Portfolio, Settings**; no document-level horizontal overflow detected and global ticker search remained usable.
+- `node --check app.js`, `node --check tests/test_browser_ui.js`, and `git diff --check` — passed.
+- Desktop screenshots: [Market](ui-screenshots/market.png), [Discover](ui-screenshots/discover.png), [Research](ui-screenshots/research.png), [Research chart](ui-screenshots/research-chart.png), [Holdings](ui-screenshots/holdings.png), [Risk](ui-screenshots/risk.png), [Alerts](ui-screenshots/alerts.png), [Settings](ui-screenshots/settings.png).
+- Narrow-window screenshots: [Market 480 px](ui-screenshots/market-480.png), [Discover 480 px](ui-screenshots/discover-480.png), [Research 480 px](ui-screenshots/research-480.png). **All screenshots contain simulated fixture quotes, portfolio positions, headlines, and updater status**; they do not verify live market prices or provider availability.
 
 The browser test uses an in-memory fixture server and never accesses the user's real portfolio database. Its simulated updater endpoint validates UI states and button wiring only; it does not install or run downloaded code.
 
