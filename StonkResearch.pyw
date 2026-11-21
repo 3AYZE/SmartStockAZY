@@ -7,9 +7,11 @@ import re
 import sqlite3
 import statistics
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
+import update_support
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,10 +21,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse, unquote, parse_qs
 from urllib.request import Request, urlopen
 
-VERSION = "0.5.0-reliability-portfolio"
+VERSION = "0.5.1-opt-in-github-updates"
 HOST, PORT = "127.0.0.1", 8765
 ROOT = Path(__file__).resolve().parent
 DB_PATH = ROOT / "stonk.db"
+UPDATE_MANAGER = update_support.UpdateManager(ROOT)
+UPDATE_EXIT = threading.Event()
 CACHE: dict = {}
 CACHE_LOCK = threading.Lock()
 DB_LOCK = threading.Lock()
@@ -1685,6 +1689,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("app.js", "application/javascript; charset=utf-8")
             if p == "/favicon.ico":
                 self.send_response(204); self.end_headers(); return
+            if p == "/api/updates/status":
+                return send_json(self, UPDATE_MANAGER.status())
+            if p == "/api/updates/check":
+                force = (parse_qs(parsed.query).get("force") or ["0"])[0] == "1"
+                UPDATE_MANAGER.check(force=force)
+                return send_json(self, UPDATE_MANAGER.status())
             if p == "/api/health":
                 return send_json(self, {"ok": True, "version": VERSION, "mode": "zero-dependency", "updated_at": now_iso()})
             if p == "/api/settings":
@@ -1720,6 +1730,20 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p = urlparse(self.path).path
             body = read_body(self)
+            if p in ("/api/updates/download", "/api/updates/apply"):
+                origin = self.headers.get("Origin")
+                host = self.headers.get("Host", "")
+                if origin not in (None, f"http://{HOST}:{PORT}") or host != f"{HOST}:{PORT}":
+                    return send_json(self, {"error": "Update action blocked: invalid local request origin"}, 403)
+                if p == "/api/updates/download":
+                    return send_json(self, UPDATE_MANAGER.download())
+                result = UPDATE_MANAGER.install()
+                send_json(self, result)
+                def exit_for_install():
+                    time.sleep(.6)
+                    UPDATE_EXIT.set()
+                threading.Thread(target=exit_for_install, daemon=True).start()
+                return
             if p == "/api/settings":
                 url = str(body.get("ollama_url") or "http://127.0.0.1:11434").strip().rstrip("/")
                 if not re.match(r"^https?://", url):
@@ -1838,12 +1862,13 @@ def main():
     browser = find_browser()
     launched = time.time()
     try:
-        if browser:
-            subprocess.Popen([browser, f"--app={url}", "--new-window", "--disable-features=Translate"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            webbrowser.open(url)
-        while True:
-            time.sleep(2)
+        if "--no-browser" not in sys.argv:
+            if browser:
+                subprocess.Popen([browser, f"--app={url}", "--new-window", "--disable-features=Translate"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                webbrowser.open(url)
+        while not UPDATE_EXIT.is_set():
+            time.sleep(1)
             if time.time() - launched > 20 and heartbeat_age() > 15:
                 break
     except KeyboardInterrupt:

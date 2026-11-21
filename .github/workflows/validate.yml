@@ -1,0 +1,36 @@
+name: Validate SmartStockAZY
+
+on:
+  push:
+    branches:
+      - main
+      - feature/opt-in-github-updates
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Python and JavaScript tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Python syntax
+        run: python -c "import ast; from pathlib import Path; [ast.parse(Path(p).read_text(encoding='utf-8')) for p in ('StonkResearch.pyw', 'update_support.py')]"
+      - name: JavaScript syntax
+        run: node --check app.js
+      - name: JavaScript UI regression suite
+        run: node --test tests/test_ui.js tests/test_update_ui.js
