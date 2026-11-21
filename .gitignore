@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+stonk.db
+stonk.db-shm
+stonk.db-wal
