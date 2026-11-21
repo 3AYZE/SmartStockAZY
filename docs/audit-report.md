@@ -3,7 +3,7 @@
 Date: 2026-11-21
 Baseline: main at 6680345 (v0.5.0)
 Review branch: codex/stock-research-audit-v050
-Pull request: add after draft PR creation
+Pull request: https://github.com/3AYZE/SmartStockAZY/pull/2
 Release status: review only; not merged, deployed, or published
 
 ## 1. Findings and priority
@@ -125,5 +125,5 @@ Before opening an existing populated database with any updated app, fully close 
 - Repository: https://github.com/3AYZE/SmartStockAZY
 - Base: main (6680345 at audit start)
 - Branch: codex/stock-research-audit-v050
-- Draft PR: to be recorded after creation
+- Draft PR: https://github.com/3AYZE/SmartStockAZY/pull/2
 - Merge/deployment/release: prohibited without user approval.
