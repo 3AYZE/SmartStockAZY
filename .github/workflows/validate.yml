@@ -33,4 +33,4 @@ jobs:
       - name: JavaScript syntax
         run: node --check app.js
       - name: JavaScript UI regression suite
-        run: node --test tests/test_ui.js
+        run: node --test tests/test_ui.js tests/test_update_ui.js
