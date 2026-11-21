@@ -180,6 +180,28 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual((self.root / name).read_bytes(), old[name])
         self.assertFalse(u.last_result()["ok"])
 
+    def test_incomplete_rollback_is_reported_as_critical(self):
+        new = fake_source("new")
+        self.prepare_stage(new)
+        real_replace = os.replace
+        failed = {"forward": False}
+
+        def break_replace(source, dest):
+            src, dst = Path(source).name, Path(dest).name
+            if dst == "app.css" and not failed["forward"]:
+                failed["forward"] = True
+                raise OSError("locked app css")
+            if dst == "app.js" and src == ".app.js.restore-tmp":
+                raise OSError("locked restore destination")
+            return real_replace(source, dest)
+
+        with patch.object(u.os, "replace", side_effect=break_replace):
+            with self.assertRaises(u.RollbackIncomplete) as exc:
+                u.apply_stage(self.stage, self.root)
+        self.assertIn("Do not launch", str(exc.exception))
+        self.assertFalse(u.last_result()["ok"])
+        self.assertIn("Restore files from", u.last_result()["message"])
+
     def test_check_is_nonblocking_and_does_not_expose_private_token(self):
         current = fake_source("old")
         latest = fake_source("new")
