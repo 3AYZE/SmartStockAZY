@@ -327,7 +327,7 @@ def apply_stage(stage: Path, root: Path, wait_pid=0, restart=False) -> Path:
 def _launch_app(root: Path) -> None:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(
-        [sys.executable, str(root / "StonkResearch.pyw")],
+        [sys.executable, str(root / "StonkResearch.pyw"), "--no-browser"],
         cwd=str(root), creationflags=flags,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
