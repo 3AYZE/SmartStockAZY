@@ -7,6 +7,7 @@ import re
 import sqlite3
 import statistics
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -1861,10 +1862,11 @@ def main():
     browser = find_browser()
     launched = time.time()
     try:
-        if browser:
-            subprocess.Popen([browser, f"--app={url}", "--new-window", "--disable-features=Translate"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            webbrowser.open(url)
+        if "--no-browser" not in sys.argv:
+            if browser:
+                subprocess.Popen([browser, f"--app={url}", "--new-window", "--disable-features=Translate"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                webbrowser.open(url)
         while not UPDATE_EXIT.is_set():
             time.sleep(1)
             if time.time() - launched > 20 and heartbeat_age() > 15:
