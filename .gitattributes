@@ -1,0 +1,7 @@
+# Keep checked-out source byte-identical to GitHub blobs on Windows.
+StonkResearch.pyw text eol=lf
+update_support.py text eol=lf
+app.js text eol=lf
+app.css text eol=lf
+index.html text eol=lf
+README.md text eol=lf
