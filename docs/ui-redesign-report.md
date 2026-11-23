@@ -65,6 +65,14 @@ Research also organizes **Financials & SEC**, **Technicals**, and **History** in
 
 The browser test uses an in-memory fixture server and never accesses the user's real portfolio database. Its simulated updater endpoint validates UI states and button wiring only; it does not install or run downloaded code.
 
+## Follow-up verification (2026-11-23)
+
+- Python: `python -m unittest discover -s tests -v` — **36 passed**. One non-fatal `ResourceWarning` was emitted while cleaning up a temporary HTTP 404 response; the affected test passed.
+- JavaScript: `node --test tests/*.js` — **15 passed, 1 skipped**. The skipped test is the real-browser fixture because `SMARTSTOCK_PLAYWRIGHT_CORE` is not configured and `playwright-core` / `playwright` are not available through the current Node module paths.
+- Syntax and whitespace: `node --check app.js` and `git diff --check` — passed.
+- Browser UI in this run: **UNVERIFIED**. Microsoft Edge is installed, but the Playwright driver required by `tests/test_browser_ui.js` is unavailable in this environment. The successful browser fixture run documented above is from 2026-11-21 and was not repeated here.
+- No application-code defect was reproduced by the available regression suite, so this follow-up makes no UI behavior changes. Windows desktop interaction, live providers, real SQLite data, and updater installation remain manual release checks listed above.
+
 ## Remaining validation / release risks
 
 1. **Windows desktop launch:** manually double-click `StonkResearch.pyw` in a representative Windows environment, confirm no console window, navigation and window resizing, and save a settings change.
