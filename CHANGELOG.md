@@ -2,6 +2,17 @@
 
 Notable product changes to SmartStockAZY. The repository's [Releases](https://github.com/3AYZE/SmartStockAZY/releases) page is the source of downloadable Windows EXE versions.
 
+## v0.6.2 — GitHub presentation refresh (November 23, 2026)
+
+**Documentation and release experience update; no stock analysis or portfolio logic changes.**
+
+- Replaces the accumulated multi-version README with a concise download-first project homepage and labeled preview screenshots.
+- Adds separate Windows setup, migration, troubleshooting and developer guides.
+- Introduces structured GitHub Release notes and reusable issue templates.
+- Rebuilds the same Windows application through the release workflow; Windows EXE startup and required tests passed.
+
+[Download release v0.6.2](https://github.com/3AYZE/SmartStockAZY/releases/tag/v0.6.2)
+
 ## v0.6.1 — Windows EXE release (November 23, 2026)
 
 **First published standalone Windows EXE.**
