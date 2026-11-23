@@ -12,7 +12,11 @@ import threading
 import time
 import webbrowser
 import update_support
-import exe_updater
+# Older portable installations may not yet have the EXE-only updater module.
+if getattr(sys, "frozen", False):
+    import exe_updater
+else:
+    exe_updater = None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1915,7 +1919,7 @@ def show_fatal(message):
 
 if __name__ == "__main__":
     try:
-        if not exe_updater.run_helper_command(sys.argv[1:]):
+        if not (IS_FROZEN and exe_updater.run_helper_command(sys.argv[1:])):
             main()
     except BaseException as exc:
         show_fatal(exc)
