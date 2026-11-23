@@ -66,7 +66,7 @@ jobs:
       - name: Package a single GUI executable
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name SmartStockAZY --icon "assets/SmartStockAZY.ico" --add-data "index.html;." --add-data "app.css;." --add-data "app.js;." --add-data "build_info.json;." StonkResearch.pyw
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --hidden-import exe_updater --name SmartStockAZY --icon "assets/SmartStockAZY.ico" --add-data "index.html;." --add-data "app.css;." --add-data "app.js;." --add-data "build_info.json;." StonkResearch.pyw
           if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
           if (!(Test-Path "dist/SmartStockAZY.exe")) { throw 'Expected Windows EXE not found' }
 
