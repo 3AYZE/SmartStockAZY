@@ -275,7 +275,7 @@ def apply_executable_update(target: Path, staged: Path, sha256: str,
                 if attempt == 4:
                     raise
                 time.sleep(1.5)
-        _spawn(target)
+        _spawn(target, ['--no-browser'])
         write_result(True, "Installed " + tag + ". Previous EXE backed up.", tag)
     except Exception as exc:
         if replaced:
@@ -289,7 +289,7 @@ def apply_executable_update(target: Path, staged: Path, sha256: str,
                 raise RuntimeError("Executable update and rollback both failed") from exc
         write_result(False, "EXE update failed; original executable retained/restored: " + str(exc), tag)
         # Recovery is permitted only when the original executable is restored.
-        _spawn(target)
+        _spawn(target, ['--no-browser'])
         raise
     finally:
         newfile.unlink(missing_ok=True)
