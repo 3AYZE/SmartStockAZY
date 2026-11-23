@@ -12,6 +12,7 @@ import threading
 import time
 import webbrowser
 import update_support
+import exe_updater
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -21,11 +22,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse, unquote, parse_qs
 from urllib.request import Request, urlopen
 
-VERSION = "0.5.1-opt-in-github-updates"
+VERSION = "0.6.0-windows-exe"
 HOST, PORT = "127.0.0.1", 8765
-ROOT = Path(__file__).resolve().parent
-DB_PATH = ROOT / "stonk.db"
-UPDATE_MANAGER = update_support.UpdateManager(ROOT)
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+BUILD_INFO = exe_updater.installed_build(ROOT) if IS_FROZEN else {}
+DB_PATH = (exe_updater.user_data_dir() / "stonk.db") if IS_FROZEN else (ROOT / "stonk.db")
+UPDATE_MANAGER = (
+    exe_updater.ExeUpdateManager(ROOT) if IS_FROZEN
+    else update_support.UpdateManager(ROOT)
+)
 UPDATE_EXIT = threading.Event()
 CACHE: dict = {}
 CACHE_LOCK = threading.Lock()
@@ -1696,7 +1702,7 @@ class Handler(BaseHTTPRequestHandler):
                 UPDATE_MANAGER.check(force=force)
                 return send_json(self, UPDATE_MANAGER.status())
             if p == "/api/health":
-                return send_json(self, {"ok": True, "version": VERSION, "mode": "zero-dependency", "updated_at": now_iso()})
+                return send_json(self, {"ok": True, "version": BUILD_INFO.get("tag", VERSION), "mode": "windows-exe" if IS_FROZEN else "zero-dependency", "updated_at": now_iso()})
             if p == "/api/settings":
                 return send_json(self, settings_payload())
             if p == "/api/ping":
@@ -1837,7 +1843,29 @@ def background_warmup():
     except Exception: pass
 
 
+def migrate_portable_database():
+    """First-run EXE migration: preserve nearby portable SQLite data using an online backup."""
+    if not IS_FROZEN or DB_PATH.exists():
+        return
+    portable = Path(sys.executable).resolve().parent / "stonk.db"
+    if not portable.is_file():
+        return
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    staging = DB_PATH.with_name("stonk.migration.tmp")
+    try:
+        from contextlib import closing
+        with closing(sqlite3.connect(str(portable), timeout=10)) as source:
+            with closing(sqlite3.connect(str(staging), timeout=10)) as destination:
+                source.backup(destination)
+        os.replace(staging, DB_PATH)
+    finally:
+        staging.unlink(missing_ok=True)
+
+
 def main():
+    if IS_FROZEN:
+        migrate_portable_database()
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     init_db(); touch_heartbeat()
     threading.Thread(target=background_warmup, daemon=True).start()
     try:
@@ -1887,6 +1915,7 @@ def show_fatal(message):
 
 if __name__ == "__main__":
     try:
-        main()
+        if not exe_updater.run_helper_command(sys.argv[1:]):
+            main()
     except BaseException as exc:
         show_fatal(exc)
