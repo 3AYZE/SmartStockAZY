@@ -112,7 +112,7 @@ class ExecutableUpdaterTests(unittest.TestCase):
                                         hashlib.sha256(new).hexdigest(), 123,
                                         "v0.6.8")
         wait.assert_called_once_with(123)
-        spawn.assert_called_once_with(target, ["--no-browser"])
+        spawn.assert_called_once_with(target.resolve(), ["--no-browser"])
         self.assertEqual(target.read_bytes(), new)
         self.assertEqual(db.read_bytes(), b"test user database not a real sqlite file")
         backups = list((self.data / "backups").glob("SmartStockAZY-*.exe"))
