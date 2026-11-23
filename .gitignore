@@ -3,3 +3,9 @@ __pycache__/
 stonk.db
 stonk.db-shm
 stonk.db-wal
+
+dist/
+build/
+*.spec
+build_info.json
+assets/
