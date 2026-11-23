@@ -2,6 +2,22 @@
 
 A lightweight, $0-first local stock research terminal for Windows. The core engine is deterministic; Ollama remains optional.
 
+## Stock terminal interface (review branch)
+
+The updated interface groups the application's existing tools into four workspaces with **Settings** at the bottom of the sidebar:
+
+| Current workspace | Previous menu entries | Where to find the tools |
+| --- | --- | --- |
+| **Market** | Market, News Intelligence | Overview and News tabs for indexes, regime, sectors, and market headlines |
+| **Discover** | Stonk Hunter | Opportunity scan, sortable results, quick and advanced filters, per-ticker research |
+| **Research** | Deep Research | Overview, Financials & SEC, Technicals, News & Events, History |
+| **Portfolio** | Portfolio, Risk Monitor, Alerts | Holdings, Risk Monitor, Alerts tabs, plus lot editing and thesis tracking |
+| **Settings** (gear) | Settings | Free data policy, scanner options, optional Ollama, SEC access, GitHub updates |
+
+Use the **ticker search in the top bar** to open research from any workspace. On narrower windows the sidebar switches to icons; hover over an icon for its name. Tables can scroll horizontally without moving the entire page. The Update Available indicator leads to the existing opt-in update controls in Settings.
+
+This UI redesign is on a review branch and is **not yet a released build**. See [UI redesign report](docs/ui-redesign-report.md) for changes, fixture screenshots, automated checks, and remaining manual Windows validation.
+
 ## v0.5 highlights
 
 ### Stricter decision reliability
