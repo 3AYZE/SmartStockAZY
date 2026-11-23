@@ -1,0 +1,125 @@
+name: Build & Release Windows EXE
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'StonkResearch.pyw'
+      - 'update_support.py'
+      - 'exe_updater.py'
+      - 'app.js'
+      - 'app.css'
+      - 'index.html'
+      - 'tools/create_windows_icon.py'
+      - '.github/workflows/release-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: smartstockazy-windows-exe-release
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout selected main commit
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Node.js 22 for frontend regression tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify backend, updater and frontend
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Python regression tests failed' }
+          node --check app.js
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript syntax failed' }
+          node --test tests/test_ui.js tests/test_update_ui.js
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript regression tests failed' }
+
+      - name: Install free build-only tools
+        shell: pwsh
+        run: python -m pip install "pyinstaller>=6,<7" "pillow>=11,<13"
+
+      - name: Prepare icon and embedded release identity
+        shell: pwsh
+        env:
+          RELEASE_TAG: v0.6.${{ github.run_number }}
+        run: |
+          python tools/create_windows_icon.py
+          if ($LASTEXITCODE -ne 0) { throw 'Icon generation failed' }
+          $info = @{ tag = $env:RELEASE_TAG; sha = $env:GITHUB_SHA }
+          $info | ConvertTo-Json -Compress | Set-Content -Path build_info.json -Encoding utf8
+
+      - name: Package a single GUI executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --hidden-import exe_updater --name SmartStockAZY --icon "assets/SmartStockAZY.ico" --add-data "index.html;." --add-data "app.css;." --add-data "app.js;." --add-data "build_info.json;." StonkResearch.pyw
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed' }
+          if (!(Test-Path "dist/SmartStockAZY.exe")) { throw 'Expected Windows EXE not found' }
+
+      - name: Test the built EXE on Windows
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "dist/SmartStockAZY.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList '--no-browser' -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 45; $i++) {
+              if ($proc.HasExited) { throw "Application exited unexpectedly with code $($proc.ExitCode)" }
+              try {
+                $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
+                if ($health.ok -eq $true -and $health.mode -eq 'windows-exe') {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+              Start-Sleep -Milliseconds 800
+            }
+            if (!$ready) { throw 'Packaged EXE failed to start its localhost server' }
+            $page = Invoke-WebRequest 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 4
+            $js = Invoke-WebRequest 'http://127.0.0.1:8765/app.js' -UseBasicParsing -TimeoutSec 4
+            $css = Invoke-WebRequest 'http://127.0.0.1:8765/app.css' -UseBasicParsing -TimeoutSec 4
+            $updates = Invoke-RestMethod 'http://127.0.0.1:8765/api/updates/status' -TimeoutSec 4
+            if ($page.StatusCode -ne 200 -or $js.StatusCode -ne 200 -or $css.StatusCode -ne 200) { throw 'Embedded UI assets unavailable' }
+            if (!$updates.installed_version) { throw 'Embedded EXE updater build identity missing' }
+            Write-Output "EXE smoke test PASS: $($health.version) / embedded assets / updater"
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Write EXE SHA-256 checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "dist/SmartStockAZY.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  SmartStockAZY.exe" | Set-Content -Path "dist/SmartStockAZY.exe.sha256" -Encoding Ascii
+
+      - name: Save downloadable build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartStockAZY-Windows-EXE
+          path: |
+            dist/SmartStockAZY.exe
+            dist/SmartStockAZY.exe.sha256
+          if-no-files-found: error
+
+      - name: Publish downloadable GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: v0.6.${{ github.run_number }}
+        run: |
+          gh release create "$env:RELEASE_TAG" "dist/SmartStockAZY.exe" "dist/SmartStockAZY.exe.sha256" --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --title "SmartStockAZY $env:RELEASE_TAG" --notes "Windows 10/11 standalone EXE with opt-in GitHub auto-update. Application source: $env:GITHUB_SHA. Notes: this is an unsigned executable; the repository is private and downloads require GitHub access." --latest
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub Release publication failed' }

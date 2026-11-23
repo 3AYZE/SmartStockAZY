@@ -1,4 +1,49 @@
-# SmartStockAZY v0.5.1 — Opt-in GitHub Updates
+# SmartStockAZY v0.6 — Windows Standalone EXE & GitHub Auto-Updates
+
+The preferred Windows download is **SmartStockAZY.exe** under [GitHub Releases](https://github.com/3AYZE/SmartStockAZY/releases/latest). Builds are created automatically from tested changes to the repository's main branch by a Windows GitHub Actions runner.
+
+- Single-window-style desktop app launched by a standalone SmartStockAZY.exe.
+- **No Python installation, console window, or paid services required** to run the EXE.
+- The interface is bundled into the executable.
+- Settings → Application Updates checks GitHub's latest *published* EXE, not raw source commits.
+- New releases are detected automatically at startup and periodically; choose **Download & Verify**, then **Restart to Install**. No silent installation.
+- Updates validate the exact asset's SHA-256 checksum published by GitHub before replacing the EXE. The old EXE is backed up; a temporary copy of the updater waits for the app to shut down, replaces the old EXE, and starts the new backend without launching a duplicate browser window.
+- Runtime user data is stored under **%LOCALAPPDATA%\SmartStockAZY\stonk.db**. The EXE is replaceable without overwriting that database. On first run, if there is no existing AppData database but an older portable stonk.db sits **next to the EXE**, it is copied using SQLite's online backup API; the original stays untouched.
+- Backups and update results are stored under **%LOCALAPPDATA%\SmartStockAZY\**.
+- The standalone EXE uses the existing browser's app mode (Microsoft Edge preferred or Chrome) as its window. Its own executable remains the local engine. This is not an Electron bundle.
+- This is an unsigned community application: Windows SmartScreen may display a warning. Do not disable security software; review the source and download only from the repository's official Release assets.
+
+## Private GitHub release access
+
+The repository is private, so downloads and update checks require a GitHub account with access. For the in-app updater, install the **free GitHub CLI** and run **gh auth login** once. The updater reads the CLI token in memory, does not embed or save credentials, and uses only the official GitHub API and Release asset URLs.
+
+If the repository becomes public, GitHub CLI is not required.
+
+**Important:** Update notifications appear only for a *successful published Windows EXE release*, not every source-code commit while GitHub Actions is still building it.
+
+## Standalone Windows EXE build pipeline
+
+Workflow: [Build & Release Windows EXE](.github/workflows/release-windows.yml).
+
+Each qualifying main-branch application update or a manual workflow dispatch:
+
+1. Runs Python and JavaScript regression tests.
+2. Packages a single SmartStockAZY.exe using the free PyInstaller build tool (not a runtime dependency).
+3. Smoke-tests the actual generated EXE, embedded UI files and updater API on Windows.
+4. Uploads the EXE and a .sha256 verification file as GitHub Actions artifacts.
+5. Publishes a new GitHub Release (v0.6.[run-number]), but **only if all earlier steps pass**.
+
+Historical strategy backtesting and live-provider functionality are separate from the installer build. The release workflow tests packaged startup and deterministic regressions, not trading-prediction accuracy.
+
+## Portable Python version
+
+StonkResearch.pyw remains usable for Python 3.11+ development without PyInstaller. In that mode, the existing source updater continues to update allowlisted source files. The portable database remains next to the script.
+
+The Windows EXE uses its independent **release asset** updater; it never attempts to install .pyw files over a running EXE.
+
+---
+
+# SmartStockAZY v0.6 — Windows EXE and Auto-Updates
 
 A lightweight, $0-first local stock research terminal for Windows. The core engine is deterministic; Ollama remains optional.
 
