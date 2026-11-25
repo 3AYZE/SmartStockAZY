@@ -378,5 +378,74 @@ class DataTest(unittest.TestCase):
                 app.positive_number(number, "Shares")
 
 
+class SystemPolishTests(unittest.TestCase):
+    def test_flat_price_rsi_is_neutral(self):
+        rows = [{"close": 100.0, "open": 100.0, "high": 100.0,
+                 "low": 100.0, "volume": 1000.0} for _ in range(30)]
+        self.assertEqual(app.indicators(rows)["rsi14"], 50)
+
+    def test_memory_cache_has_a_hard_entry_limit(self):
+        with patch.object(app, "CACHE", {}), patch.object(app, "CACHE_MAX_ENTRIES", 5):
+            for i in range(12):
+                app.cache_put(("example", i), i)
+            self.assertEqual(len(app.CACHE), 5)
+            self.assertEqual(app.cache_get(("example", 11), 60), 11)
+            self.assertIsNone(app.cache_get(("example", 0), 60))
+            app.cache_put(("example", 11), "updated")
+            self.assertEqual(len(app.CACHE), 5)
+
+    def test_scanner_returns_all_successful_rows_by_default(self):
+        stock = {
+            "quote": {"name": "Mock", "price": 100, "change_percent": 1, "stale": False},
+            "scores": {"quality": 96, "momentum": 90, "entry": 88, "risk": 15, "confidence": 60},
+            "indicators": {"falling_knife_risk": 10, "stabilization_score": 80,
+                           "gap_risk": 10, "trend_score_raw": 2},
+            "price_model": {"overextension_risk": 10, "risk_reward": 2.5},
+        }
+        symbols = ["T" + str(i) for i in range(40)] + [" t0 ", "t1", "INVALID!"]
+        with patch.object(app, "get_setting", return_value="100"), \
+             patch.object(app, "market_regime", return_value={"entry_adjust": 0, "risk_adjust": 0}), \
+             patch.object(app, "basic_stock", return_value=stock), \
+             patch.object(app.threading.Thread, "start"):
+            result = app.hunter_scan(symbols)
+            limited = app.hunter_scan(symbols, 10)
+        self.assertEqual(result["scanned"], 41)
+        self.assertEqual(result["successful"], 40)
+        self.assertEqual(len(result["results"]), 40)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(len(limited["results"]), 10)
+        self.assertEqual(len({x["ticker"] for x in result["results"]}), 40)
+
+    def test_market_refresh_discards_only_relevant_cached_data(self):
+        calls = []
+        def fake_quote(symbol, name):
+            calls.append(symbol)
+            return {"ticker": symbol, "name": name, "price": 100, "change_percent": 0}
+
+        with patch.object(app, "CACHE", {}), \
+             patch.object(app, "quick_quote", side_effect=fake_quote), \
+             patch.object(app, "market_regime", return_value={"label": "NEUTRAL"}), \
+             patch.object(app, "fast_news", return_value=[]):
+            app.cache_put(("chart", "^GSPC", "6mo"), "old benchmark")
+            app.cache_put(("chart", "AAPL", "1y"), "unrelated stock")
+            app.market_dashboard()
+            count = len(calls)
+            app.market_dashboard()
+            self.assertEqual(len(calls), count)
+            app.market_dashboard(force=True)
+            self.assertEqual(len(calls), count * 2)
+            self.assertIsNone(app.cache_get(("chart", "^GSPC", "6mo"), 60))
+            self.assertEqual(app.cache_get(("chart", "AAPL", "1y"), 60), "unrelated stock")
+
+    def test_quick_quote_exposes_provider_observation_time(self):
+        quote = {"stale": False, "price": 100, "change_percent": 1,
+                 "updated_at": "2026-11-23T14:00:00+00:00",
+                 "retrieved_at": "2026-11-24T14:00:00+00:00"}
+        with patch.object(app, "basic_stock", return_value={"quote": quote, "indicators": {}}):
+            row = app.quick_quote("^GSPC", "S&P 500")
+        self.assertEqual(row["observed_at"], quote["updated_at"])
+        self.assertEqual(row["retrieved_at"], quote["retrieved_at"])
+
+
 if __name__ == "__main__":
     unittest.main()
