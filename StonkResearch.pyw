@@ -1430,18 +1430,19 @@ def ollama_research(pkg):
         return {"enabled": True, "status": "OLLAMA ERROR", "summary": str(exc), "confidence": 0}
 
 
-def hunter_scan(symbols=None, limit=28):
+def hunter_scan(symbols=None, limit=None):
     if symbols is None:
         custom = [x.strip().upper() for x in get_setting("hunter_universe", "").split(",") if x.strip()]
         symbols = custom or DEFAULT_UNIVERSE
     maxn = max(5, min(int(get_setting("hunter_max_symbols", "36") or 36), 100))
     if not isinstance(symbols, (list, tuple)) or any(not isinstance(x, str) for x in symbols):
         raise ValueError("Scanner symbols must be a list of ticker strings")
-    normalized = [clean_ticker(x) for x in symbols]
+    normalized = [x.strip().upper() for x in symbols if x.strip()]
     symbols = list(dict.fromkeys(normalized))[:maxn]
     out, errors = [], []
     regime = market_regime()
     def one(t):
+        t = clean_ticker(t)
         b = basic_stock(t, "6mo"); ind = b["indicators"]; pm = b["price_model"]; sc = dict(b["scores"])
         if b["quote"].get("stale"):
             raise ValueError("Market history is stale; scan candidate unavailable")
@@ -1476,7 +1477,8 @@ def hunter_scan(symbols=None, limit=28):
             t=row["ticker"]; sec_fundamentals(t); sec_filings(t); fast_news(row.get("name") or t,12,True)
         except Exception: pass
     threading.Thread(target=lambda:[warm(x) for x in finalists],daemon=True).start()
-    return {"results":out[:max(1,min(int(limit),60))],"scanned":len(symbols),"successful":len(out),"errors":errors[:10],
+    results = out if limit is None else out[:max(1,min(int(limit),maxn))]
+    return {"results":results,"scanned":len(symbols),"successful":len(out),"errors":errors,
         "regime":regime,"note":"Fast quantitative first pass with market-regime adjustment. Run Deep Research on finalists before treating a candidate as actionable.","updated_at":now_iso()}
 
 
@@ -1487,8 +1489,14 @@ def quick_quote(symbol, name):
     return {"ticker": symbol, "name": name, "price": b["quote"]["price"], "change_percent": b["quote"]["change_percent"], "momentum_1m": b["indicators"].get("momentum_1m"), "observed_at": b["quote"].get("updated_at"), "retrieved_at": b["quote"].get("retrieved_at")}
 
 
-def market_dashboard():
+def market_dashboard(force=False):
     key = ("dashboard",)
+    if force:
+        symbols = {s for s, _ in INDEXES + SECTORS}
+        with CACHE_LOCK:
+            for entry in list(CACHE):
+                if entry in (key, ("market_regime",)) or (entry[0] == "chart" and entry[1] in symbols):
+                    CACHE.pop(entry, None)
     c = cache_get(key, 180)
     if c:
         return c
@@ -1720,7 +1728,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/ping":
                 touch_heartbeat(); return send_json(self, {"ok": True})
             if p == "/api/dashboard":
-                return send_json(self, market_dashboard())
+                return send_json(self, market_dashboard(force=True) if (parse_qs(parsed.query).get("force") or ["0"])[0] == "1" else market_dashboard())
             if p.startswith("/api/chart/"):
                 qs = parse_qs(parsed.query)
                 rng = (qs.get("range") or ["1y"])[0]
@@ -1779,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/api/ai-research/"):
                 return send_json(self, ai_research_package(unquote(p.rsplit("/", 1)[1])))
             if p == "/api/hunter":
-                return send_json(self, hunter_scan(body.get("symbols"), body.get("limit", 28)))
+                return send_json(self, hunter_scan(body.get("symbols"), body.get("limit")))
             if p == "/api/positions":
                 t = clean_ticker(body.get("ticker"))
                 sh = positive_number(body.get("shares"), "Shares")
