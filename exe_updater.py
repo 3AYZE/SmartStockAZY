@@ -347,7 +347,14 @@ def apply_executable_update(target: Path, staged: Path, sha256: str,
         raise
     finally:
         newfile.unlink(missing_ok=True)
-        shutil.rmtree(staged.parent, ignore_errors=True)
+        # Never recursively delete a directory merely because a helper
+        # command named an executable within it.
+        if staged.parent.parent == Path(tempfile.gettempdir()).resolve() and staged.parent.name.startswith("SmartStockAZY-exe-"):
+            staged.unlink(missing_ok=True)
+            try:
+                staged.parent.rmdir()
+            except OSError:
+                pass
 
 
 def run_helper_command(argv: list[str]) -> bool:
