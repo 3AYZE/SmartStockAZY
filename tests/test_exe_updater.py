@@ -107,12 +107,14 @@ class ExecutableUpdaterTests(unittest.TestCase):
         db = directory / "stonk.db"
         db.write_bytes(b"test user database not a real sqlite file")
         with patch.object(app.update_support, "_wait_for_pid") as wait, \
-             patch.object(app, "_spawn") as spawn:
+             patch.object(app, "_spawn") as spawn, \
+             patch.object(app, "wait_for_startup") as startup:
             app.apply_executable_update(target, staged,
                                         hashlib.sha256(new).hexdigest(), 123,
                                         "v0.6.8")
         wait.assert_called_once_with(123)
         spawn.assert_called_once_with(target.resolve(), ["--no-browser"])
+        startup.assert_called_once_with(spawn.return_value, "v0.6.8")
         self.assertEqual(target.read_bytes(), new)
         self.assertEqual(db.read_bytes(), b"test user database not a real sqlite file")
         backups = list((self.data / "backups").glob("SmartStockAZY-*.exe"))
@@ -155,6 +157,77 @@ class ExecutableUpdaterTests(unittest.TestCase):
         self.assertEqual(manager.status()["status"], "idle")
         with self.assertRaisesRegex(ValueError, "No newer"):
             manager.download()
+
+    def test_public_release_download_uses_tagged_binary_url(self):
+        data = b"MZ" + b"sample"
+        with patch.object(app, "_open", return_value=FakeResponse(data)) as download:
+            app.fetch_exe(release(body=data), self.root)
+        download.assert_called_once_with(
+            "https://github.com/3AYZE/SmartStockAZY/releases/download/v0.6.3/SmartStockAZY.exe",
+            None, "application/octet-stream")
+
+    def test_version_comparison_crosses_minor_and_major_releases(self):
+        self.assertTrue(app.is_newer({"tag": "v0.6.99"}, release("v0.7.0")))
+        self.assertTrue(app.is_newer({"tag": "v0.99.99"}, release("v1.0.0")))
+        self.assertFalse(app.is_newer({"tag": "v1.0.0"}, release("v0.9.99")))
+        self.assertFalse(app.is_newer({"tag": "v0.6.3"}, release("v0.6.4-beta")))
+
+    def test_redirect_strips_credentials_and_rejects_insecure_hosts(self):
+        import urllib.request
+        from email.message import Message
+        req = urllib.request.Request(
+            app.REPO_API + "/releases/assets/17", headers={"Authorization": "Bearer example"})
+        handler = app._redirect_handler()
+        target = "https://release-assets.githubusercontent.com/file"
+        redirected = handler.redirect_request(req, None, 302, "Found", Message(), target)
+        self.assertFalse(redirected.has_header("Authorization"))
+        self.assertEqual(redirected.full_url, target)
+        with self.assertRaisesRegex(ValueError, "untrusted"):
+            handler.redirect_request(req, None, 302, "Found", Message(),
+                                     "http://github.com/unsafe")
+
+    def test_spawn_resets_pyinstaller_environment(self):
+        with patch.object(app.subprocess, "Popen") as popen:
+            app._spawn(self.root / "SmartStockAZY.exe", ["--no-browser"])
+        self.assertEqual(popen.call_args.kwargs["env"]["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_startup_requires_expected_release_and_process_identity(self):
+        from unittest.mock import Mock
+        process = Mock(pid=123)
+        process.poll.return_value = None
+        payload = {"ok": True, "version": "v0.6.8", "mode": "windows-exe",
+                   "pid": 456, "parent_pid": 123}
+        with patch.object(app.urllib.request, "urlopen",
+                          return_value=FakeResponse(json.dumps(payload).encode())):
+            app.wait_for_startup(process, "v0.6.8", timeout=1)
+        payload["parent_pid"] = 789
+        with patch.object(app.urllib.request, "urlopen",
+                          return_value=FakeResponse(json.dumps(payload).encode())), \
+             patch.object(app.time, "sleep"), \
+             patch.object(app.time, "monotonic", side_effect=[0, 0, 2]):
+            with self.assertRaisesRegex(TimeoutError, "startup verification"):
+                app.wait_for_startup(process, "v0.6.8", timeout=1)
+
+    def test_failed_health_check_rolls_back(self):
+        directory = self.root / "program"
+        directory.mkdir()
+        target = directory / "SmartStockAZY.exe"
+        target.write_bytes(b"MZOLD")
+        stage_dir = self.root / "stage"
+        stage_dir.mkdir()
+        staged = stage_dir / "SmartStockAZY.exe"
+        staged.write_bytes(b"MZNEW")
+        with patch.object(app.update_support, "_wait_for_pid"), \
+             patch.object(app, "_spawn") as spawn, \
+             patch.object(app, "wait_for_startup", side_effect=TimeoutError("startup verification")), \
+             patch.object(app, "stop_launched_process") as stop:
+            with self.assertRaisesRegex(TimeoutError, "startup verification"):
+                app.apply_executable_update(target, staged,
+                    hashlib.sha256(b"MZNEW").hexdigest(), 123, "v0.6.8")
+        stop.assert_called_once_with(spawn.return_value)
+        self.assertEqual(target.read_bytes(), b"MZOLD")
+        self.assertEqual(spawn.call_count, 2)
+        self.assertFalse(app.last_result()["ok"])
 
     def test_frozen_database_migration_keeps_original(self):
         import importlib.machinery
