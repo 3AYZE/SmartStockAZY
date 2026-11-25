@@ -97,7 +97,57 @@ jobs:
             if (!$updates.installed_version) { throw 'Embedded EXE updater build identity missing' }
             Write-Output "EXE smoke test PASS: $($health.version) / embedded assets / updater"
           } finally {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            if (!$proc.HasExited) { taskkill /PID $proc.Id /T /F | Out-Null }
+          }
+
+      - name: Exercise packaged EXE replacement helper on Windows
+        shell: pwsh
+        env:
+          RELEASE_TAG: v0.6.${{ github.run_number }}
+        run: |
+          $originalAppData = $env:LOCALAPPDATA
+          $fixture = Join-Path $env:RUNNER_TEMP 'smartstock-update-smoke'
+          $env:LOCALAPPDATA = Join-Path $fixture 'AppData'
+          $appData = Join-Path $env:LOCALAPPDATA 'SmartStockAZY'
+          $installed = Join-Path $fixture 'installed'
+          $staged = Join-Path $fixture 'staged'
+          $helper = Join-Path $fixture 'helper'
+          New-Item -ItemType Directory -Force $appData,$installed,$staged,$helper | Out-Null
+          $source = (Resolve-Path 'dist/SmartStockAZY.exe').Path
+          $target = Join-Path $installed 'SmartStockAZY.exe'
+          $payload = Join-Path $staged 'SmartStockAZY.exe'
+          $runner = Join-Path $helper 'SmartStockAZY-Updater.exe'
+          # Isolated fixture: old file differs from the verified replacement.
+          Copy-Item $source $target
+          Add-Content -Path $target -Value 'old fixture marker' -Encoding Ascii
+          $oldHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item $source $payload
+          Copy-Item $source $runner
+          $newHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+          $db = Join-Path $appData 'stonk.db'
+          $env:SMARTSTOCK_SMOKE_DB = $db
+          python -c "import os,sqlite3; c=sqlite3.connect(os.environ['SMARTSTOCK_SMOKE_DB']); c.execute('create table smoke_marker(value text)'); c.execute('insert into smoke_marker values (?)',('preserve-me',)); c.commit(); c.close()"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture DB setup failed' }
+          $args = "--apply-exe-update ""$target"" ""$payload"" $newHash 0 $env:RELEASE_TAG"
+          $proc = Start-Process -FilePath $runner -ArgumentList $args -PassThru
+          try {
+            if (!$proc.WaitForExit(65000)) { throw 'Packaged helper timed out' }
+            $resultPath = Join-Path $appData 'exe-update-result.json'
+            if (!(Test-Path $resultPath)) { throw 'No helper result written' }
+            $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+            if (!$result.ok -or $result.tag -ne $env:RELEASE_TAG) { throw "Update helper failed: $($result.message)" }
+            if ((Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $newHash) { throw 'Installed binary hash mismatch' }
+            $backup = Get-ChildItem (Join-Path $appData 'backups') -Filter '*.exe' | Select-Object -First 1
+            if (!$backup -or (Get-FileHash $backup.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $oldHash) { throw 'Old binary backup mismatch' }
+            $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 4
+            if ($health.version -ne $env:RELEASE_TAG) { throw 'Replacement did not launch the expected build' }
+            python -c "import os,sqlite3; c=sqlite3.connect(os.environ['SMARTSTOCK_SMOKE_DB']); assert c.execute('select value from smoke_marker').fetchone()==('preserve-me',); c.close()"
+            if ($LASTEXITCODE -ne 0) { throw 'Local data was not preserved' }
+            Write-Output 'Packaged replacement, backup, restart and SQLite preservation PASS'
+          } finally {
+            if (!$proc.HasExited) { taskkill /PID $proc.Id /T /F | Out-Null }
+            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            $env:LOCALAPPDATA = $originalAppData
           }
 
       - name: Write EXE SHA-256 checksum

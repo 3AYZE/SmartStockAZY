@@ -29,7 +29,7 @@ REPO_API = "https://api.github.com/repos/3AYZE/SmartStockAZY"
 MAX_EXE_SIZE = 160 * 1024 * 1024
 MAX_RELEASE_METADATA = 1024 * 1024
 SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
-TAG = re.compile(r"^v0\.6\.(\d+)$")
+TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 TRUSTED_HOSTS = {
     "api.github.com", "github.com", "release-assets.githubusercontent.com",
     "objects.githubusercontent.com",
@@ -57,12 +57,12 @@ def _redirect_handler():
             previous = urllib.parse.urlparse(req.full_url)
             if target.scheme != "https" or target.hostname not in TRUSTED_HOSTS:
                 raise ValueError("GitHub redirected an update to an untrusted host")
-            safe = dict(headers)
-            # Never send GitHub credentials to redirect CDN hosts.
-            if target.hostname != previous.hostname:
-                safe.pop("Authorization", None)
-                safe.pop("authorization", None)
-            return super().redirect_request(req, fp, code, msg, safe, newurl)
+            redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+            # urllib copies Request headers, not the response-header argument.
+            if redirected is not None and target.hostname != previous.hostname:
+                redirected.remove_header("Authorization")
+                redirected.remove_header("authorization")
+            return redirected
     return RestrictedRedirect()
 
 
@@ -76,7 +76,7 @@ def _open(url: str, token: str | None = None,
         "Accept": accept,
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    if token:
+    if token and parsed.hostname == "api.github.com":
         headers["Authorization"] = "Bearer " + token
     opener = urllib.request.build_opener(_redirect_handler())
     return opener.open(urllib.request.Request(url, headers=headers), timeout=30)
@@ -110,6 +110,8 @@ def newest_release() -> dict:
     except urllib.error.HTTPError as exc:
         if exc.code not in (401, 403, 404):
             raise
+        if exc.code == 403 and exc.headers and exc.headers.get("X-RateLimit-Remaining") == "0":
+            raise RuntimeError("GitHub public API rate limit reached. Try again later.") from None
         token = _private_token()
         raw = _read_limited(url, token)
     data = json.loads(raw.decode("utf-8"))
@@ -131,10 +133,11 @@ def newest_release() -> dict:
         expected_hash = digest[7:].lower()
     elif checksum_asset and isinstance(checksum_asset.get("id"), int):
         raw_checksum = _read_limited(
-            REPO_API + "/releases/assets/" + str(checksum_asset["id"]),
+            release_asset_url(tag, "SmartStockAZY.exe.sha256", checksum_asset["id"], token),
             token, 4096, "application/octet-stream"
         )
-        value = raw_checksum.decode("utf-8-sig").strip().split()[0]
+        parts = raw_checksum.decode("utf-8-sig").strip().split()
+        value = parts[0] if parts else ""
         if not SHA256.fullmatch(value):
             raise ValueError("Invalid published SHA-256 checksum")
         expected_hash = value.lower()
@@ -151,13 +154,23 @@ def newest_release() -> dict:
     }
 
 
+def release_asset_url(tag: str, filename: str, asset_id: int, token: str | None) -> str:
+    if not TAG.fullmatch(tag) or filename not in ("SmartStockAZY.exe", "SmartStockAZY.exe.sha256"):
+        raise ValueError("Invalid release asset")
+    # For public releases use the immutable tag's browser download route;
+    # unauthenticated API asset requests can return JSON instead of bytes.
+    if token:
+        return REPO_API + "/releases/assets/" + str(asset_id)
+    return "https://github.com/3AYZE/SmartStockAZY/releases/download/" + tag + "/" + filename
+
+
 def is_newer(installed: dict, release: dict) -> bool:
     older = TAG.fullmatch(str(installed.get("tag", "")))
     newer = TAG.fullmatch(release["tag"])
     if not newer:
         return False
     if older:
-        return int(newer.group(1)) > int(older.group(1))
+        return tuple(map(int, newer.groups())) > tuple(map(int, older.groups()))
     return release["tag"] != installed.get("tag")
 
 
@@ -166,7 +179,7 @@ def fetch_exe(release: dict, stage: Path, progress=None) -> Path:
     stage.mkdir(parents=True, exist_ok=True)
     destination = stage / "SmartStockAZY.exe"
     expected = release["sha256"]
-    asset_url = REPO_API + "/releases/assets/" + str(release["asset_id"])
+    asset_url = release_asset_url(release["tag"], "SmartStockAZY.exe", release["asset_id"], release["token"])
     digest = hashlib.sha256()
     total = 0
     try:
@@ -237,11 +250,47 @@ def sha256_file(path):
 
 def _spawn(executable: Path, args=None):
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    env = dict(os.environ)
+    # A one-file PyInstaller app must extract its own bundled resources when
+    # launching another independent copy, especially when changing versions.
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return subprocess.Popen(
         [str(executable)] + list(args or []), cwd=str(executable.parent),
-        creationflags=flags, stdin=subprocess.DEVNULL,
+        env=env, creationflags=flags, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+
+
+def wait_for_startup(process, tag: str, timeout=35):
+    """Verify that the newly launched process is serving its own expected build."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Updated executable exited before startup")
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:8765/api/health", timeout=1) as response:
+                data = json.loads(response.read(65536).decode("utf-8"))
+            if (data.get("ok") is True and data.get("version") == tag
+                    and data.get("mode") == "windows-exe"
+                    and process.pid in (data.get("pid"), data.get("parent_pid"))):
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(.5)
+    raise TimeoutError("Updated executable did not pass startup verification")
+
+
+def stop_launched_process(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        # Limit shutdown to the updater's own launched process tree.
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                       capture_output=True, timeout=10,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    else:
+        process.terminate()
+    process.wait(timeout=10)
 
 
 def apply_executable_update(target: Path, staged: Path, sha256: str,
@@ -275,8 +324,13 @@ def apply_executable_update(target: Path, staged: Path, sha256: str,
                 if attempt == 4:
                     raise
                 time.sleep(1.5)
-        _spawn(target, ['--no-browser'])
-        write_result(True, "Installed " + tag + ". Previous EXE backed up.", tag)
+        launched = _spawn(target, ["--no-browser"])
+        try:
+            wait_for_startup(launched, tag)
+        except Exception:
+            stop_launched_process(launched)
+            raise
+        write_result(True, "Installed " + tag + ". Startup verified; previous EXE backed up.", tag)
     except Exception as exc:
         if replaced:
             restore = target.with_name("SmartStockAZY.exe.restore")
@@ -293,7 +347,14 @@ def apply_executable_update(target: Path, staged: Path, sha256: str,
         raise
     finally:
         newfile.unlink(missing_ok=True)
-        shutil.rmtree(staged.parent, ignore_errors=True)
+        # Never recursively delete a directory merely because a helper
+        # command named an executable within it.
+        if staged.parent.parent == Path(tempfile.gettempdir()).resolve() and staged.parent.name.startswith("SmartStockAZY-exe-"):
+            staged.unlink(missing_ok=True)
+            try:
+                staged.parent.rmdir()
+            except OSError:
+                pass
 
 
 def run_helper_command(argv: list[str]) -> bool:
@@ -398,18 +459,24 @@ class ExeUpdateManager:
             if target.name.lower() != "smartstockazy.exe":
                 raise RuntimeError("Unexpected application executable name")
             stage, release = self.stage, self.latest
-        if sha256_file(stage) != release["sha256"]:
-            raise RuntimeError("Downloaded EXE changed since verification")
-        helper_dir = Path(tempfile.mkdtemp(prefix="SmartStockAZY-helper-"))
-        helper_exe = helper_dir / "SmartStockAZY-Updater.exe"
+            # Reserve the install state while holding the lock to prevent
+            # two windows from starting competing replacement helpers.
+            self.data.update(status="installing", message="Preparing verified update")
+        helper_dir = None
         try:
+            if sha256_file(stage) != release["sha256"]:
+                raise RuntimeError("Downloaded EXE changed since verification")
+            helper_dir = Path(tempfile.mkdtemp(prefix="SmartStockAZY-helper-"))
+            helper_exe = helper_dir / "SmartStockAZY-Updater.exe"
             shutil.copy2(target, helper_exe)
             _spawn(helper_exe, [
                 "--apply-exe-update", str(target), str(stage),
                 release["sha256"], str(os.getpid()), release["tag"],
             ])
         except Exception:
-            shutil.rmtree(helper_dir, ignore_errors=True)
+            if helper_dir is not None:
+                shutil.rmtree(helper_dir, ignore_errors=True)
+            self._set(status="ready", message="Could not start update helper; retry or download manually.")
             raise
         self._set(status="installing", message="Closing application to safely install " + release["tag"])
         return {"ok": True, "message": "The application will restart after its verified EXE update"}

@@ -38,6 +38,7 @@ UPDATE_MANAGER = (
 )
 UPDATE_EXIT = threading.Event()
 CACHE: dict = {}
+CACHE_MAX_ENTRIES = 1200
 CACHE_LOCK = threading.Lock()
 DB_LOCK = threading.Lock()
 LAST_HEARTBEAT = time.time()
@@ -174,11 +175,15 @@ def cache_get(key, ttl):
 
 def cache_put(key, value):
     with CACHE_LOCK:
-        if len(CACHE) > 1200:
+        if len(CACHE) >= CACHE_MAX_ENTRIES and key not in CACHE:
             cutoff = time.time() - 3600
             for k, v in list(CACHE.items()):
                 if v[0] < cutoff:
                     CACHE.pop(k, None)
+            # Expired entries alone are insufficient during large, recent scans.
+            while len(CACHE) >= CACHE_MAX_ENTRIES:
+                oldest = min(CACHE, key=lambda k: CACHE[k][0])
+                CACHE.pop(oldest)
         CACHE[key] = (time.time(), value)
     return value
 
@@ -839,7 +844,7 @@ def indicators(rows):
     for a, b in zip(c[-15:-1], c[-14:]):
         d = b-a; gains.append(max(d,0)); losses.append(max(-d,0))
     ag=sum(gains)/len(gains) if gains else 0; al=sum(losses)/len(losses) if losses else 0
-    rsi=100 if al==0 else 100-(100/(1+ag/al))
+    rsi=50 if ag==0 and al==0 else 100 if al==0 else 100-(100/(1+ag/al))
     trs=[]; rr=rows[-15:]
     for i in range(1,len(rr)):
         hi=fnum(rr[i].get("high")) or rr[i]["close"]; lo=fnum(rr[i].get("low")) or rr[i]["close"]; pc=rr[i-1]["close"]
@@ -1425,15 +1430,19 @@ def ollama_research(pkg):
         return {"enabled": True, "status": "OLLAMA ERROR", "summary": str(exc), "confidence": 0}
 
 
-def hunter_scan(symbols=None, limit=28):
+def hunter_scan(symbols=None, limit=None):
     if symbols is None:
         custom = [x.strip().upper() for x in get_setting("hunter_universe", "").split(",") if x.strip()]
         symbols = custom or DEFAULT_UNIVERSE
     maxn = max(5, min(int(get_setting("hunter_max_symbols", "36") or 36), 100))
-    symbols = list(dict.fromkeys(symbols))[:maxn]
+    if not isinstance(symbols, (list, tuple)) or any(not isinstance(x, str) for x in symbols):
+        raise ValueError("Scanner symbols must be a list of ticker strings")
+    normalized = [x.strip().upper() for x in symbols if x.strip()]
+    symbols = list(dict.fromkeys(normalized))[:maxn]
     out, errors = [], []
     regime = market_regime()
     def one(t):
+        t = clean_ticker(t)
         b = basic_stock(t, "6mo"); ind = b["indicators"]; pm = b["price_model"]; sc = dict(b["scores"])
         if b["quote"].get("stale"):
             raise ValueError("Market history is stale; scan candidate unavailable")
@@ -1468,7 +1477,8 @@ def hunter_scan(symbols=None, limit=28):
             t=row["ticker"]; sec_fundamentals(t); sec_filings(t); fast_news(row.get("name") or t,12,True)
         except Exception: pass
     threading.Thread(target=lambda:[warm(x) for x in finalists],daemon=True).start()
-    return {"results":out[:max(1,min(int(limit),60))],"scanned":len(symbols),"successful":len(out),"errors":errors[:10],
+    results = out if limit is None else out[:max(1,min(int(limit),maxn))]
+    return {"results":results,"scanned":len(symbols),"successful":len(out),"errors":errors,
         "regime":regime,"note":"Fast quantitative first pass with market-regime adjustment. Run Deep Research on finalists before treating a candidate as actionable.","updated_at":now_iso()}
 
 
@@ -1476,11 +1486,17 @@ def quick_quote(symbol, name):
     b = basic_stock(symbol, "6mo")
     if b["quote"].get("stale"):
         raise ValueError("Market benchmark price is stale")
-    return {"ticker": symbol, "name": name, "price": b["quote"]["price"], "change_percent": b["quote"]["change_percent"], "momentum_1m": b["indicators"].get("momentum_1m")}
+    return {"ticker": symbol, "name": name, "price": b["quote"]["price"], "change_percent": b["quote"]["change_percent"], "momentum_1m": b["indicators"].get("momentum_1m"), "observed_at": b["quote"].get("updated_at"), "retrieved_at": b["quote"].get("retrieved_at")}
 
 
-def market_dashboard():
+def market_dashboard(force=False):
     key = ("dashboard",)
+    if force:
+        symbols = {s for s, _ in INDEXES + SECTORS}
+        with CACHE_LOCK:
+            for entry in list(CACHE):
+                if entry in (key, ("market_regime",)) or (entry[0] == "chart" and entry[1] in symbols):
+                    CACHE.pop(entry, None)
     c = cache_get(key, 180)
     if c:
         return c
@@ -1706,13 +1722,13 @@ class Handler(BaseHTTPRequestHandler):
                 UPDATE_MANAGER.check(force=force)
                 return send_json(self, UPDATE_MANAGER.status())
             if p == "/api/health":
-                return send_json(self, {"ok": True, "version": BUILD_INFO.get("tag", VERSION), "mode": "windows-exe" if IS_FROZEN else "zero-dependency", "updated_at": now_iso()})
+                return send_json(self, {"ok": True, "version": BUILD_INFO.get("tag", VERSION), "mode": "windows-exe" if IS_FROZEN else "zero-dependency", "pid": os.getpid(), "parent_pid": os.getppid(), "updated_at": now_iso()})
             if p == "/api/settings":
                 return send_json(self, settings_payload())
             if p == "/api/ping":
                 touch_heartbeat(); return send_json(self, {"ok": True})
             if p == "/api/dashboard":
-                return send_json(self, market_dashboard())
+                return send_json(self, market_dashboard(force=True) if (parse_qs(parsed.query).get("force") or ["0"])[0] == "1" else market_dashboard())
             if p.startswith("/api/chart/"):
                 qs = parse_qs(parsed.query)
                 rng = (qs.get("range") or ["1y"])[0]
@@ -1771,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/api/ai-research/"):
                 return send_json(self, ai_research_package(unquote(p.rsplit("/", 1)[1])))
             if p == "/api/hunter":
-                return send_json(self, hunter_scan(body.get("symbols"), body.get("limit", 28)))
+                return send_json(self, hunter_scan(body.get("symbols"), body.get("limit")))
             if p == "/api/positions":
                 t = clean_ticker(body.get("ticker"))
                 sh = positive_number(body.get("shares"), "Shares")

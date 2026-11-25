@@ -70,9 +70,15 @@ def _cli_token() -> str | None:
 
 class _TrustedRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlparse(newurl).hostname not in ALLOWED_HOSTS:
+        target = urllib.parse.urlparse(newurl)
+        previous = urllib.parse.urlparse(req.full_url)
+        if target.scheme != "https" or target.hostname not in ALLOWED_HOSTS:
             raise ValueError("Unexpected update download destination")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and target.hostname != previous.hostname:
+            redirected.remove_header("Authorization")
+            redirected.remove_header("authorization")
+        return redirected
 
 
 def _get(url: str, token: str | None, max_bytes: int) -> bytes:
@@ -84,7 +90,7 @@ def _get(url: str, token: str | None, max_bytes: int) -> bytes:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    if token:
+    if token and parsed.hostname == "api.github.com":
         headers["Authorization"] = "Bearer " + token
     opener = urllib.request.build_opener(_TrustedRedirect())
     with opener.open(urllib.request.Request(url, headers=headers), timeout=18) as response:

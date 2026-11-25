@@ -5,7 +5,15 @@
 - **SmartStockAZY.exe** — standalone Windows application; no Python installation needed.
 - **SmartStockAZY.exe.sha256** — SHA-256 checksum to verify the downloaded executable.
 
-> SmartStockAZY is currently hosted in a **private repository**. You must sign into a GitHub account with access to download this release.
+> SmartStockAZY is publicly accessible. No GitHub account or GitHub CLI is required for public downloads.
+
+## Reliability improvements
+
+- Public release downloads require no GitHub login or CLI.
+- Updates check the expected executable version and process startup before reporting success; failures attempt rollback.
+- Discover displays every successfully scanned stock by default, with duplicate tickers normalized.
+- Market refresh requests new benchmark quotes and displays observation times; flat-price RSI and missing risk labels are corrected.
+- In-memory caching is bounded, and the Windows release pipeline exercises the actual packaged replacement helper with a disposable database.
 
 ## About SmartStockAZY
 
@@ -34,13 +42,13 @@ The EXE bundles the Python backend and user interface. No paid APIs, subscriptio
 
 Newer **published GitHub Releases** can be detected within the app. Open **Settings → Application Updates**, then choose **Download & Verify** and **Restart to Install**.
 
-For this private repository, in-app update checks require the free GitHub CLI signed in with an authorized account using **gh auth login**. Updates are never installed silently.
+Public in-app updates use the official tagged release asset. Updates are never installed silently. If an older v0.6.1/v0.6.2 updater cannot download the asset, close the application and replace the EXE manually; your AppData database is separate.
 
 ## Important information
 
 - This is a **portable, unsigned** Windows EXE, not a Microsoft Store or signed installer.
 - Prices, earnings dates, news and financial data can be delayed or unavailable.
 - Research scores and suggested entry/exit levels are **not guaranteed predictions or financial advice**.
-- The Windows build and local startup are checked automatically; live-provider and real private-repository update/restart behavior need additional manual verification.
+- The Windows build and local startup are checked automatically; live-provider and end-user update/restart behavior need additional manual verification.
 
 **Guides:** [Overview](https://github.com/3AYZE/SmartStockAZY) · [Windows setup](https://github.com/3AYZE/SmartStockAZY/blob/main/docs/GETTING_STARTED.md) · [Changelog](https://github.com/3AYZE/SmartStockAZY/blob/main/CHANGELOG.md) · [Report a problem](https://github.com/3AYZE/SmartStockAZY/issues/new)

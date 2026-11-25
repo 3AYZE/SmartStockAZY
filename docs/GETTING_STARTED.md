@@ -5,7 +5,7 @@
 ## 1. Download and launch
 
 1. Open the [latest release](https://github.com/3AYZE/SmartStockAZY/releases/latest).
-2. Under **Assets**, download **SmartStockAZY.exe**. You must be signed into a GitHub account that can access this repository while it remains private.
+2. Under **Assets**, download **SmartStockAZY.exe**.
 3. Place the file in a writable folder, such as a folder inside Documents or Downloads.
 4. Double-click **SmartStockAZY.exe**. The local engine starts and opens the interface in a Microsoft Edge or Google Chrome app-style window.
 
@@ -53,30 +53,20 @@ Go to **Settings → Application Updates**:
 
 The previous EXE is backed up in the user-data directory. Your local SQLite database is separate from the application executable. **Updates are opt-in; they never silently replace the running app.**
 
-### Private GitHub repository access
+### Public GitHub downloads
 
-SmartStockAZY's repository is currently **private**. In-app release checks need an account with access.
+SmartStockAZY is public. No account, GitHub CLI, or API key is required for public release checks and downloads. If GitHub limits public API requests temporarily, try again later or use the official Releases page.
 
-1. Install the free [GitHub CLI](https://cli.github.com/).
-2. Open PowerShell or Windows Terminal and run:
+If v0.6.1 or v0.6.2 cannot download an update, close it and manually replace SmartStockAZY.exe with the latest official release. Leave your AppData database intact. The newer updater uses the tagged public binary URL rather than relying on the asset API to return bytes.
 
-       gh auth login
-
-3. Sign in to a GitHub account with permission to access the SmartStockAZY repository.
-4. Open SmartStockAZY and select **Check for Updates** in Settings.
-
-The updater reads your existing GitHub CLI authentication when needed. It does **not** embed a personal access token in its code or SQLite database.
-
-If the repository becomes public in the future, GitHub CLI authentication is not required for public release downloads.
-
-> **Verification boundary:** The EXE build, startup and bundled UI/API checks passed in GitHub Actions, but a complete private-repository download, replacement and restart cycle on an end-user Windows PC has not yet been independently validated. Keep a backup of the previous EXE until your first update succeeds.
+> **Verification boundary:** The EXE build, startup and bundled UI/API checks passed in GitHub Actions, but the complete update experience on an end-user Windows PC has not yet been independently validated. Keep a backup of the previous EXE until your first update succeeds.
 
 ## 5. If something goes wrong
 
 | Problem | What to check |
 | --- | --- |
-| GitHub release is inaccessible | Confirm you are signed into a GitHub account with access to this private repository |
-| Update check asks for GitHub CLI | Install GitHub CLI, run **gh auth login**, then retry |
+| GitHub release is inaccessible | Check the official public Releases page and network connection |
+| Update check asks for GitHub CLI | Public releases do not require GitHub CLI; check the app version, repository availability, and API rate-limit status |
 | Application window does not appear | Confirm Edge or Chrome is installed and another copy of SmartStockAZY is not already running |
 | Port 8765 already in use | Close duplicate SmartStockAZY processes and retry |
 | Data or research is missing | Check that the active database is at the AppData path and that you migrated the correct portable database |
