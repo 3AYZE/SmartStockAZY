@@ -49,13 +49,13 @@ Explore the market, screen stocks, review the evidence behind a potential entry,
 
 ## Get started
 
-1. **[Download SmartStockAZY.exe](https://github.com/3AYZE/SmartStockAZY/releases/latest/download/SmartStockAZY.exe)** from the latest GitHub Release. You need access to this repository while it is private.
+1. **[Download SmartStockAZY.exe](https://github.com/3AYZE/SmartStockAZY/releases/latest/download/SmartStockAZY.exe)** from the latest GitHub Release.
 2. Save the EXE in a writable folder and open it. The application uses Microsoft Edge or Chrome to display its desktop-style window.
 3. Search for a ticker, or open **Discover** to run a stock screen.
 
 **No Python installation or paid API key is required to run the Windows EXE.**
 
-For an older portable installation, existing portfolio data, troubleshooting, and private GitHub access, read the [Windows setup guide](docs/GETTING_STARTED.md).
+For an older portable installation, existing portfolio data, troubleshooting, and update recovery, read the [Windows setup guide](docs/GETTING_STARTED.md).
 
 ## Updates
 
@@ -67,7 +67,7 @@ SmartStockAZY checks for newer **published GitHub Releases** and shows an update
 
 Updates are **never installed silently**. The updater verifies the downloaded EXE against the published SHA-256 digest and keeps a backup of the previous executable. Portfolio data is stored separately in the local user-data folder.
 
-**Private repository:** In-app updates currently require an authorized GitHub account signed into the free [GitHub CLI](https://cli.github.com/) using the command gh auth login. No GitHub token is embedded in the app.
+**Public releases:** Downloads and in-app updates do not require a GitHub account, GitHub CLI, or API key.
 
 See [Setup, updates, and data safety](docs/GETTING_STARTED.md) for details.
 
@@ -79,7 +79,7 @@ See [Setup, updates, and data safety](docs/GETTING_STARTED.md) for details.
 - **Privacy:** Holdings and application settings are stored locally in SQLite. No brokerage connection or automatic orders are provided.
 - **Accuracy:** Research scores, entry zones, and risk signals are heuristic analysis, **not financial advice or guaranteed predictions**.
 
-The Windows build and localhost startup passed automated checks. Live-source behavior, real-world investment accuracy, and the full private-repository EXE update/restart process still require manual validation. The EXE is currently **unsigned**; download only from this repository's Releases page.
+The Windows build and localhost startup passed automated checks. Live-source behavior, real-world investment accuracy, and end-user EXE update/restart behavior still require manual validation. The EXE is currently **unsigned**; download only from this repository's Releases page.
 
 ## Documentation
 
