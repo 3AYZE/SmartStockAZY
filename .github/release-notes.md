@@ -7,6 +7,14 @@
 
 > SmartStockAZY is publicly accessible. No GitHub account or GitHub CLI is required for public downloads.
 
+## Reliability improvements
+
+- Public release downloads require no GitHub login or CLI.
+- Updates check the expected executable version and process startup before reporting success; failures attempt rollback.
+- Discover displays every successfully scanned stock by default, with duplicate tickers normalized.
+- Market refresh requests new benchmark quotes and displays observation times; flat-price RSI and missing risk labels are corrected.
+- In-memory caching is bounded, and the Windows release pipeline exercises the actual packaged replacement helper with a disposable database.
+
 ## About SmartStockAZY
 
 A free, local-first stock research terminal for exploring the market, screening stocks, reviewing company evidence and downside risk, and monitoring a portfolio.
