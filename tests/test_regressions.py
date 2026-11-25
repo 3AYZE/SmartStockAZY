@@ -406,7 +406,9 @@ class SystemPolishTests(unittest.TestCase):
         with patch.object(app, "get_setting", return_value="100"), \
              patch.object(app, "market_regime", return_value={"entry_adjust": 0, "risk_adjust": 0}), \
              patch.object(app, "basic_stock", return_value=stock), \
-             patch.object(app.threading.Thread, "start"):
+             patch.object(app, "sec_fundamentals", return_value={}), \
+             patch.object(app, "sec_filings", return_value=[]), \
+             patch.object(app, "fast_news", return_value=[]):
             result = app.hunter_scan(symbols)
             limited = app.hunter_scan(symbols, 10)
         self.assertEqual(result["scanned"], 41)
