@@ -162,7 +162,7 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await capture('market.png');
   await page.locator('#quickHunter').click();
   await page.locator('.hunter-row').first().waitFor();
-  assert.equal(await page.locator('#hunterStats .metric-card').count(), 5);
+  assert.equal(await page.locator('#hunterStats .metric-card').count(), 4);
   assert.equal(await page.locator('.hunter-row').count(), 2);
   await page.getByRole('button', {name: 'Low Risk'}).click();
   assert.equal(await page.locator('.hunter-row').count(), 1);
@@ -189,6 +189,15 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-research="NVDA"]').click();
   await page.locator('.research-tabs').waitFor();
   await page.locator('.chart-wrap').waitFor();
+  assert.equal(await page.locator('.decision-summary .metric-card').count(), 4);
+  assert.equal(await page.locator('.compact-levels .zone').count(), 3);
+  const reasoning = page.locator('details.compact-fold').filter({has: page.getByText('Research reasoning', {exact: true})});
+  assert.equal(await reasoning.getAttribute('open'), null);
+  await reasoning.locator('summary').click();
+  assert.equal(await reasoning.getAttribute('open'), '');
+  await reasoning.locator('summary').click();
+  assert.equal(await reasoning.getAttribute('open'), null);
+  assert.equal(await page.locator('.score-list:visible').count(), 0);
   await page.locator('.chart-wrap').hover({position: {x: 160, y: 90}});
   assert.notEqual(await page.locator('.js-chart-price').textContent(), '—');
   await page.locator('.range-btn[data-range="1mo"]').click();
@@ -216,6 +225,8 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('.range-btn.active[data-range="1mo"]').waitFor();
   await page.getByRole('tab', {name: 'Financials & SEC'}).click();
   await page.getByText('Sample SEC filing').waitFor();
+  await page.getByRole('tab', {name: 'Technicals'}).click();
+  await page.locator('.score-list').waitFor();
   await page.getByRole('tab', {name: 'News & Events'}).click();
   await page.getByRole('tab', {name: 'History'}).click();
   await page.locator('.history-row').waitFor();
@@ -253,6 +264,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#pth').fill('Growth thesis');
   await page.locator('#savePos').click();
   await page.locator('[data-edit]').waitFor();
+  assert.equal(await page.locator('#out table thead th').count(), 6);
+  assert.equal(await page.locator('.lot-fold').getAttribute('open'), null);
+  await page.locator('.lot-fold summary').click();
+  await page.locator('.lot-fold').getByText('Trailing exit').waitFor();
+  await page.locator('.lot-fold summary').click();
   await page.locator('[data-edit]').click();
   await page.locator('#ps').fill('3');
   await page.locator('#savePos').click();
