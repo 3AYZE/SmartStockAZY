@@ -296,3 +296,37 @@ textarea {min-height:86px;}
 }
 .chart-crosshair {background:var(--accent);}
 .chart-crosshair-dot {box-shadow:0 0 0 1px rgba(112,181,230,.35);}
+
+/* Compact default workspace; detailed evidence is opt-in. */
+.compact-fold{border:1px solid var(--line);border-radius:8px;background:#101923;min-width:0;}
+.compact-fold>summary{cursor:pointer;padding:11px 14px;color:var(--text);font-size:12px;font-weight:600;line-height:1.4;}
+.compact-fold>summary::marker{color:var(--accent);}
+.compact-fold[open]>summary{border-bottom:1px solid var(--line);}
+.fold-body{padding:14px;min-width:0;overflow-wrap:anywhere;}
+.fold-body>:first-child{margin-top:0;}.fold-body>:last-child{margin-bottom:0;}
+.decision-summary{padding:14px;}
+.decision-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;}
+.compact-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+.compact-kpis .metric-card{padding:10px 12px;min-width:0;}
+.compact-kpis .metric-card b{font-size:20px;font-variant-numeric:tabular-nums;}
+.decision-summary>.compact-fold{margin-top:10px;}
+.compact-levels{grid-template-columns:repeat(3,minmax(0,1fr));}
+.research-reason-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+#researchTabContent .smart-chart,#out>.stack .smart-chart{height:clamp(260px,40vh,420px);}
+#researchTabContent .panel-pad>.compact-fold,#out>.compact-fold{margin-top:10px;}
+#hunterStats .kpi-row,.portfolio-summary{grid-template-columns:repeat(4,minmax(0,1fr));}
+#hunterStats .metric-card{padding:10px 12px;}
+.news-summary{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;padding:10px 0 14px;font-size:12px;color:var(--muted);}
+.news-summary b{color:var(--text);font-size:14px;}
+.lot-fold{min-width:84px;background:transparent;border-color:transparent;}
+.lot-fold>summary{padding:6px 8px;white-space:nowrap;}
+.lot-fold[open]{border-color:var(--line);}
+.lot-fold .fold-body{padding:8px;}
+.lot-detail{display:grid;gap:6px;min-width:150px;}
+.risk-card .compact-fold{margin-top:10px;}
+.risk-thesis{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.settings-foot{margin-top:12px;}
+.topbar{min-height:64px;height:64px;}
+@media(min-width:1121px){.workspace-tab-shell:not(:empty){top:64px;}}
+@media(max-width:1120px){.topbar{height:auto;min-height:64px;flex-direction:row;align-items:center;justify-content:space-between;}.top-right{width:auto;flex:1;}.global-search{flex:1 1 150px;}}
+@media(max-width:690px){.topbar{flex-direction:column;align-items:stretch;gap:6px;}.top-right{width:100%;}.compact-kpis,#hunterStats .kpi-row,.portfolio-summary{grid-template-columns:repeat(2,minmax(0,1fr));}.research-reason-grid{grid-template-columns:1fr;}.compact-levels{grid-template-columns:repeat(2,minmax(0,1fr));}}
