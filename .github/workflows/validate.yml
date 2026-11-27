@@ -34,3 +34,24 @@ jobs:
         run: node --check app.js
       - name: JavaScript UI regression suite
         run: node --test tests/test_ui.js tests/test_update_ui.js
+
+      - name: Install browser test driver (build-only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/smartstock-ui" --no-package-lock --no-audit --no-fund playwright-core@1.56.1
+          if ($LASTEXITCODE -ne 0) { throw 'Browser test dependency failed' }
+      - name: Browser interaction and responsive layout
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:SMARTSTOCK_PLAYWRIGHT_CORE = Join-Path $env:RUNNER_TEMP 'smartstock-ui/node_modules/playwright-core'
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+          )
+          $env:SMARTSTOCK_BROWSER = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (!$env:SMARTSTOCK_BROWSER) { throw 'No browser available for UI test' }
+          node --test tests/test_browser_ui.js
+          if ($LASTEXITCODE -ne 0) { throw 'Browser UI tests failed' }
