@@ -143,7 +143,16 @@ def newest_release() -> dict:
         expected_hash = value.lower()
     else:
         raise ValueError("Release missing trusted SHA-256 information")
+    # Plain-text, bounded summary. Do not render release Markdown or HTML in the app.
+    summary_lines = []
+    for line in str(data.get("body") or "")[:10000].splitlines():
+        if line.strip().startswith(("- ", "* ")):
+            clean = line.strip()[2:].replace("**", "").replace("`", "")
+            summary_lines.append(clean[:160])
+            if len(summary_lines) >= 3:
+                break
     return {
+        "release_summary": " • ".join(summary_lines),
         "tag": tag,
         "release_url": "https://github.com/3AYZE/SmartStockAZY/releases/tag/" + tag,
         "updated_at": data.get("published_at"),
@@ -415,6 +424,7 @@ class ExeUpdateManager:
                 self.data.update(
                     status="available" if newer else "current", available=newer,
                     latest_sha=latest["tag"], release_url=latest["release_url"],
+                    release_summary=latest.get("release_summary", ""),
                     updated_at=latest["updated_at"],
                     changed=["SmartStockAZY.exe"] if newer else [],
                     message="New Windows EXE update available" if newer else "You are using the latest published EXE",
