@@ -160,3 +160,15 @@ test('risk monitor reports unknown news evidence without presenting zero risk', 
   assert.match(element('#out').innerHTML, /News Risk/);
   assert.match(element('#out').innerHTML, /UNAVAILABLE/);
 });
+
+
+test('News workspace automatically loads the market and labels unavailable risk', async () => {
+  const {context,element}=setup();
+  vm.runInContext('renderGeneration=1;News()',context);
+  assert(context.pending.has('/api/news-search/stock%20market'));
+  context.pending.get('/api/news-search/stock%20market')({items:[],risk:{available:false},resolved_query:'stock market'});
+  await settle();
+  assert.match(element('#newsOut').innerHTML,/News evidence unavailable/);
+  assert.match(element('#newsOut').innerHTML,/Unavailable/);
+  assert.doesNotMatch(element('#newsOut').innerHTML,/0\/100/);
+});
