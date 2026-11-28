@@ -449,5 +449,51 @@ class SystemPolishTests(unittest.TestCase):
         self.assertEqual(row["retrieved_at"], quote["retrieved_at"])
 
 
+class ExpandedNewsTests(unittest.TestCase):
+    def test_market_browsing_combines_providers_and_topics_without_duplicate_articles(self):
+        def article(n, publisher="Yahoo example"):
+            return {"title": "Headline number " + str(n), "url": "https://example.com/news/" + str(n),
+                    "publisher": publisher, "published": "2026-11-20T12:00:00Z"}
+        def yahoo(query, maximum):
+            if query == "stock market":
+                return [article(n) for n in range(30)]
+            if query == "stock earnings":
+                return [article(n) for n in range(30, 60)]
+            return [article(n) for n in range(60, 90)]
+        duplicate = dict(article(0), url="https://example.com/news/0?utm_source=test")
+        extra = [duplicate, article(999, "GDELT example")] + [
+            article(n, "GDELT example") for n in range(90, 120)]
+        extra[1]["published"] = "2026-11-21T12:00:00Z"
+        with patch.object(app, "yahoo_news_search", side_effect=yahoo) as primary, \
+             patch.object(app, "gdelt_news", return_value=extra) as secondary:
+            rows, coverage = app.expanded_news_feed("stock market")
+        self.assertEqual(len(rows), 100)
+        self.assertEqual(rows[0]["title"], "Headline number 999")
+        self.assertEqual(len({x["url"].split("?")[0] for x in rows}), len(rows))
+        self.assertEqual(primary.call_count, 3)
+        secondary.assert_called_once_with("stock market", 75, "7d")
+        self.assertEqual(coverage["Yahoo Finance"], 90)
+        self.assertEqual(coverage["GDELT"], len(extra))
+
+    def test_ticker_feed_preserves_available_provider_and_query(self):
+        row = {"title": "Company headline", "url": "https://example.com/a", "publisher": "Example"}
+        with patch.object(app, "yahoo_news_search", side_effect=TimeoutError("offline")) as yahoo, \
+             patch.object(app, "gdelt_news", return_value=[row]):
+            rows, coverage = app.expanded_news_feed("NVDA")
+        self.assertEqual(rows, [row])
+        self.assertEqual(coverage["Yahoo Finance"], 0)
+        yahoo.assert_called_once_with("NVDA", 30)
+
+    def test_news_search_empty_evidence_is_not_cached_as_success(self):
+        with patch.object(app, "CACHE", {}), \
+             patch.object(app, "expanded_news_feed", return_value=([], {"Yahoo Finance": 0, "GDELT": 0})) as provider:
+            first = app.news_search("TEST")
+            app.news_search("TEST")
+        self.assertFalse(first["risk"]["available"])
+        self.assertEqual(provider.call_count, 2)
+        with self.assertRaises(ValueError):
+            app.news_search("x" * 121)
+
+
 if __name__ == "__main__":
     unittest.main()
