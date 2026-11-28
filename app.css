@@ -379,3 +379,18 @@ textarea {min-height:86px;}
 .news-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
 .news-pagination button[hidden]{display:none}
 #newsArticles .market-news+.market-news{border-top:1px solid var(--line)}
+
+/* Final compact controls and related-story / lot grouping. */
+.news-filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 10px}
+.news-filters select,.quick-filter select{max-width:180px;min-width:0;padding:7px 9px;font-size:12px}
+.news-group-toggle{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+.news-group-toggle input{width:auto;margin:0}
+.related-news{margin:0 0 8px 40px}
+.related-news>summary{padding:6px 9px;font-size:11px}
+.portfolio-company{background:#172230}
+tr[data-company-lot][hidden]{display:none!important}
+tr[data-company-lot]>td:first-child{padding-left:26px}
+.chart-mode{display:flex;gap:5px;margin-left:auto}
+.candle.up{fill:#39b88b;stroke:#39b88b}.candle.down{fill:#e16c77;stroke:#e16c77}
+.candle line{stroke-width:1;vector-effect:non-scaling-stroke}
+@media(max-width:690px){.news-filters select{flex:1 1 42%;max-width:100%}.related-news{margin-left:12px}.chart-mode{margin-left:0}}
