@@ -157,11 +157,21 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.goto(base);
   assert.equal(await page.title(), 'SmartStockAZY — Stock Research Terminal');
   await page.getByText('S&P 500').waitFor();
-  assert.equal(await page.locator('.nav-link').count(), 4);
+  assert.equal(await page.locator('.nav-link').count(), 5);
   assert.equal(await page.locator('#versionBadge').textContent(), 'v0.5.1');
   assert.equal(await page.locator('.market-indexes.grouped-strip').count(), 1);
   assert.equal(await page.locator('.market-indexes .index-card').count(), 2);
   await capture('market.png');
+  await page.locator('#openMarketNews').click();
+  await page.locator('.news-feed').waitFor();
+  assert.equal(await page.locator('#newsQuery').inputValue(), 'stock market');
+  await page.getByRole('button', {name: 'Earnings', exact: true}).click();
+  await page.locator('.news-feed h3').getByText('stock earnings', {exact: true}).waitFor();
+  await page.locator('#newsQuery').fill('NVDA');
+  await page.locator('#newsSearch').getByRole('button', {name:'Search', exact:true}).click();
+  await page.locator('.news-feed h3').getByText('NVDA', {exact:true}).waitFor();
+  await page.getByRole('button', {name: 'Market', exact: true}).first().click();
+  await page.locator('#quickHunter').waitFor();
   await page.locator('#quickHunter').click();
   await page.locator('.hunter-row').first().waitFor();
   assert.equal(await page.locator('#hunterStats .metric-card').count(), 4);
@@ -289,6 +299,7 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-del]').click();
   await page.getByText('No positions stored yet.').waitFor();
   await page.locator('#settingsNav').click();
+  await page.locator('#hm').waitFor();
   assert.equal(await page.locator('.setting-group').count(), 3);
   assert.equal(await page.locator('.optional-settings').getAttribute('open'), null);
   await page.locator('.optional-settings summary').click();
@@ -303,10 +314,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await capture('settings.png');
   await page.reload();
   await page.locator('#settingsNav').click();
+  await page.locator('#hm').waitFor();
   assert.equal(await page.locator('#hm').inputValue(), '25');
   for (const [width, height] of [[1920, 1080], [1600, 900], [1366, 768], [1280, 720], [1024, 768], [840, 720], [720, 720], [480, 700]]) {
     await page.setViewportSize({width, height});
-    for (const section of ['Market', 'Discover', 'Research', 'Portfolio', 'Settings']) {
+    for (const section of ['Market', 'Discover', 'Research', 'News', 'Portfolio', 'Settings']) {
       if (section === 'Settings') await page.locator('#settingsNav').click();
       else await page.locator(`[data-page="${section}"]`).click();
       const size = await page.evaluate(() => ({
