@@ -7,6 +7,8 @@
 
 - Added a dedicated News workspace with automatic market headlines, quick topics, ticker search and expandable event analysis.
 
+- Expanded news coverage across both existing providers, with up to 100 unique headlines per feed and Load more in batches of 20.
+
 ## Download
 
 **Windows 10/11 (64-bit):** Download **SmartStockAZY.exe** from Assets. No Python, paid API or GitHub account required. The executable is unsigned.
