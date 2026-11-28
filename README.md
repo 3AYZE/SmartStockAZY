@@ -36,6 +36,7 @@ Explore the market, screen stocks, review the evidence behind a potential entry,
 | **Market** | Major indexes, sector performance, market regime, and news |
 | **Discover** | Stonk Hunter screening, sortable rankings, and risk filters |
 | **Research** | Price charts, company fundamentals, technical indicators, SEC filings, news, and entry/exit analysis |
+| **News** | Market headlines, company search, topic filters, and event analysis |
 | **Portfolio** | Holdings, multiple purchase lots, cost basis, profit/loss, risk monitoring, and alerts |
 | **Settings** | Data preferences, optional Ollama, and application updates |
 
