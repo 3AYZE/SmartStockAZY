@@ -375,3 +375,7 @@ textarea {min-height:86px;}
 .news-feed .news-title{overflow-wrap:anywhere}
 .news-feed .news-row{grid-template-columns:36px minmax(0,1fr) auto}
 @media(max-width:690px){.news-heading .searchbar{flex:1 1 100%;max-width:none}.news-feed .news-row{grid-template-columns:28px minmax(0,1fr) auto;gap:7px}.news-feed .news-summary{gap:8px 12px}}
+
+.news-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.news-pagination button[hidden]{display:none}
+#newsArticles .market-news+.market-news{border-top:1px solid var(--line)}
