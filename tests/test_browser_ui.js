@@ -159,6 +159,8 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.getByText('S&P 500').waitFor();
   assert.equal(await page.locator('.nav-link').count(), 4);
   assert.equal(await page.locator('#versionBadge').textContent(), 'v0.5.1');
+  assert.equal(await page.locator('.market-indexes.grouped-strip').count(), 1);
+  assert.equal(await page.locator('.market-indexes .index-card').count(), 2);
   await capture('market.png');
   await page.locator('#quickHunter').click();
   await page.locator('.hunter-row').first().waitFor();
@@ -191,6 +193,8 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('.chart-wrap').waitFor();
   assert.equal(await page.locator('.decision-summary .metric-card').count(), 4);
   assert.equal(await page.locator('.compact-levels .zone').count(), 3);
+  assert.equal(await page.locator('.price-history-slot').locator('xpath=ancestor::section[1]').locator('.compact-levels').count(), 1);
+  assert.equal(await page.locator('.evidence-group').count(), 1);
   const reasoning = page.locator('details.compact-fold').filter({has: page.getByText('Research reasoning', {exact: true})});
   assert.equal(await reasoning.getAttribute('open'), null);
   await reasoning.locator('summary').click();
@@ -285,6 +289,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-del]').click();
   await page.getByText('No positions stored yet.').waitFor();
   await page.locator('#settingsNav').click();
+  assert.equal(await page.locator('.setting-group').count(), 3);
+  assert.equal(await page.locator('.optional-settings').getAttribute('open'), null);
+  await page.locator('.optional-settings summary').click();
+  await page.locator('#oe').waitFor({state: 'visible'});
+  await page.locator('.optional-settings summary').click();
   await page.locator('#hm').fill('25');
   await page.getByRole('button', {name: 'SAVE SETTINGS'}).click();
   await page.getByText('Saved ✓').waitFor();
