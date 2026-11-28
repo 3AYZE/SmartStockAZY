@@ -394,3 +394,9 @@ tr[data-company-lot]>td:first-child{padding-left:26px}
 .candle.up{fill:#39b88b;stroke:#39b88b}.candle.down{fill:#e16c77;stroke:#e16c77}
 .candle line{stroke-width:1;vector-effect:non-scaling-stroke}
 @media(max-width:690px){.news-filters select{flex:1 1 42%;max-width:100%}.related-news{margin-left:12px}.chart-mode{margin-left:0}}
+
+.chart-mode-btn{background:#111923;border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:11px;color:var(--muted)}
+.chart-mode-btn.active{background:#223a50;color:var(--accent);border-color:var(--accent)}
+#updateWhatsNew{margin-top:8px;line-height:1.5;overflow-wrap:anywhere}
+#updateReleaseLink{display:inline-block;margin-top:6px;color:var(--accent)}
+#updateReleaseLink[hidden],#updateWhatsNew[hidden]{display:none}
