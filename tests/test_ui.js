@@ -172,3 +172,25 @@ test('News workspace automatically loads the market and labels unavailable risk'
   assert.match(element('#newsOut').innerHTML,/Unavailable/);
   assert.doesNotMatch(element('#newsOut').innerHTML,/0\/100/);
 });
+
+
+test('news groups related coverage without dropping individual articles and supports filters',()=>{
+ const {context}=setup();
+ context.rows=[{title:'one',event_id:'E1',impact:'HIGH',published:'2026-11-20',publisher:'A',sentiment:'BEARISH'},{title:'two',event_id:'E1',impact:'MEDIUM',published:'2026-11-21',publisher:'B',sentiment:'NEUTRAL'},{title:'three',impact:'LOW',published:'2026-11-22',publisher:'C'}];
+ assert.equal(vm.runInContext('newsGroups(rows,newsPreferences).length',context),2);
+ assert.equal(vm.runInContext('newsGroups(rows,newsPreferences).flat().length',context),3);
+ assert.equal(vm.runInContext('newsGroups(rows,{...newsPreferences,impact:"HIGH"})[0][0].title',context),'one');
+ assert.equal(vm.runInContext('newsGroups(rows,{...newsPreferences,sort:"impact"})[0][0].title',context),'one');
+ assert.equal(vm.runInContext('newsGroups(rows,{...newsPreferences,group:false}).length',context),3);
+});
+test('portfolio groups multiple lots without merging individual records',()=>{
+ const {context}=setup();context.lots=[{ticker:'AAA',id:1},{ticker:'BBB',id:2},{ticker:'AAA',id:3}];
+ assert.equal(vm.runInContext('portfolioLotGroups(lots).length',context),2);
+ assert.equal(vm.runInContext('portfolioLotGroups(lots)[0][1].map(x=>x.id).join(",")',context),'1,3');
+});
+test('candles use genuine OHLC and fall back to a line when unavailable',()=>{
+ const {context}=setup();context.candles=[{open:100,high:103,low:98,close:102},{open:102,high:104,low:97,close:99}];
+ assert.match(vm.runInContext('chartMode="candles";chartInner(candles)',context),/class="candle up"/);
+ assert.match(vm.runInContext('chartInner(candles)',context),/class="candle down"/);
+ assert.match(vm.runInContext('chartInner([{close:100},{close:102}])',context),/<polyline/);
+});
