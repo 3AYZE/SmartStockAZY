@@ -101,9 +101,14 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
         open: 145 + i, close: 146 + i, volume: 1000000 + 10000 * i,
       })) : stock('NVDA').history});
     }
-    if (pathname.startsWith('/api/news-search/'))
-      return send({items: [], resolved_query: decodeURIComponent(pathname.split('/').pop()),
+    if (pathname.startsWith('/api/news-search/')) {
+      const query = decodeURIComponent(pathname.split('/').pop());
+      return send({items: Array.from({length: 45}, (_, i) => ({
+        title: 'Example headline ' + i, publisher: 'QA fixture', url: 'https://example.com/' + i,
+        reliability: 80, published: '2026-11-20T10:00:00Z', confirmation: 'UNVERIFIED',
+      })), resolved_query: query, provider_counts: {'Yahoo Finance': 30, GDELT: 15},
         risk: {score: 0, events: [], confirmed_event_count: 0, event_count: 0}});
+    }
     if (pathname === '/api/settings') {
       if (req.method === 'POST') prefs = {...prefs, ...JSON.parse(body)};
       return send(prefs);
@@ -165,6 +170,12 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#openMarketNews').click();
   await page.locator('.news-feed').waitFor();
   assert.equal(await page.locator('#newsQuery').inputValue(), 'stock market');
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 20);
+  await page.locator('#moreNews').click();
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 40);
+  await page.locator('#moreNews').click();
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 45);
+  assert.equal(await page.locator('#moreNews').isVisible(), false);
   await page.getByRole('button', {name: 'Earnings', exact: true}).click();
   await page.locator('.news-feed h3').getByText('stock earnings', {exact: true}).waitFor();
   await page.locator('#newsQuery').fill('NVDA');
