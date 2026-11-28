@@ -176,6 +176,10 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#moreNews').click();
   assert.equal(await page.locator('#newsArticles .news-row').count(), 45);
   assert.equal(await page.locator('#moreNews').isVisible(), false);
+  await page.locator('#newsImpact').selectOption('HIGH');
+  await page.getByText('No headlines match these filters.').waitFor();
+  await page.locator('#newsImpact').selectOption('All');
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 20);
   await page.getByRole('button', {name: 'Earnings', exact: true}).click();
   await page.locator('.news-feed h3').getByText('stock earnings', {exact: true}).waitFor();
   await page.locator('#newsQuery').fill('NVDA');
@@ -187,9 +191,9 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('.hunter-row').first().waitFor();
   assert.equal(await page.locator('#hunterStats .metric-card').count(), 4);
   assert.equal(await page.locator('.hunter-row').count(), 2);
-  await page.getByRole('button', {name: 'Low Risk'}).click();
+  await page.locator('#hunterQuick').selectOption('Low Risk');
   assert.equal(await page.locator('.hunter-row').count(), 1);
-  await page.getByRole('button', {name: 'All', exact: true}).click();
+  await page.locator('#hunterQuick').selectOption('All');
   await page.evaluate(() => {window.__qaHunterSearch = document.querySelector('#hunterSearch')});
   await page.locator('#hunterSearch').fill('MSFT');
   assert.equal(await page.locator('.hunter-row').count(), 1);
@@ -223,6 +227,9 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await reasoning.locator('summary').click();
   assert.equal(await reasoning.getAttribute('open'), null);
   assert.equal(await page.locator('.score-list:visible').count(), 0);
+  await page.locator('[data-chart-mode="candles"]').click();
+  await page.getByText('Complete OHLC data unavailable; showing line chart.').waitFor();
+  await page.locator('[data-chart-mode="line"]').click();
   await page.locator('.chart-wrap').hover({position: {x: 160, y: 90}});
   assert.notEqual(await page.locator('.js-chart-price').textContent(), '—');
   await page.locator('.range-btn[data-range="1mo"]').click();
@@ -355,6 +362,7 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-page="Market"]').click();
   dashboardFailure = true;
   await page.locator('#refreshDash').click();
-  await page.getByText('Market source offline').waitFor();
+  await page.getByText(/Market source offline/).waitFor();
+  await page.getByText('S&P 500').waitFor();
   assert.deepEqual(exceptions, [], 'Unexpected browser JavaScript errors');
 });
