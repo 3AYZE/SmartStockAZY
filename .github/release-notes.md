@@ -11,6 +11,8 @@
 
 - Added news filtering and related coverage, preserved previous results during market and scanner refresh, grouped multiple portfolio lots, and added OHLC candlestick mode.
 
+- Update notifications now include a short release summary and official release notes link.
+
 ## Download
 
 **Windows 10/11 (64-bit):** Download **SmartStockAZY.exe** from Assets. No Python, paid API or GitHub account required. The executable is unsigned.
