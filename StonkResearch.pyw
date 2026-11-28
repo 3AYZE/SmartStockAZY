@@ -575,7 +575,7 @@ def gdelt_news(query_text, max_records=20, timespan="7d"):
     persistent = disk_cache_get(f"gdelt:{query_text.lower()}:{max_records}:{timespan}", 1800)
     if persistent is not None:
         return cache_put(key, persistent)
-    params = urlencode({"query": f'"{query_text}"', "mode": "artlist", "maxrecords": min(max_records, 30), "timespan": timespan, "sort": "datedesc", "format": "json"})
+    params = urlencode({"query": f'"{query_text}"', "mode": "artlist", "maxrecords": min(max_records, 75), "timespan": timespan, "sort": "datedesc", "format": "json"})
     try:
         data = http_json(f"https://api.gdeltproject.org/api/v2/doc/doc?{params}", timeout=7, retries=0)
     except Exception:
@@ -1523,18 +1523,80 @@ def market_dashboard(force=False):
     return cache_put(key, result)
 
 
+NEWS_FEED_LIMIT = 100
+
+
+def expanded_news_feed(query_text):
+    """Dedicated browsing feed only; stock and portfolio scoring use fast_news."""
+    q = query_text.strip()
+    market = q.lower() == "stock market"
+    queries = [q, "stock earnings", "Federal Reserve"] if market else [q]
+    jobs = [("Yahoo Finance", yahoo_news_search, (term, 30)) for term in queries]
+    jobs.append(("GDELT", gdelt_news, (q, 75, "7d")))
+    batches = []
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(fn, *args): (idx, label) for idx, (label, fn, args) in enumerate(jobs)}
+        for future in as_completed(futures):
+            idx, label = futures[future]
+            try:
+                rows = future.result() or []
+            except Exception:
+                rows = []
+            batches.append((idx, label, rows))
+    seen_urls, seen_titles, items = set(), set(), []
+    coverage = {}
+    for _, label, rows in sorted(batches):
+        coverage[label] = coverage.get(label, 0) + len(rows)
+        for item in rows:
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or "").strip()
+            try:
+                parsed = urlparse(url)
+                if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                    continue
+                # Ignore fragments and common campaign parameters, not article IDs.
+                params = [(key, value) for key, values in parse_qs(parsed.query, keep_blank_values=True).items()
+                          if not key.lower().startswith("utm_") and key.lower() not in ("gclid", "fbclid")
+                          for value in values]
+                url_key = (parsed.hostname.lower(), parsed.path.rstrip("/"), tuple(sorted(params)))
+            except ValueError:
+                continue
+            title_key = (str(item.get("publisher") or item.get("domain") or parsed.hostname).strip().casefold(),
+                         " ".join(re.findall(r"\w+", title.casefold())))
+            if not title or url_key in seen_urls or title_key in seen_titles:
+                continue
+            seen_urls.add(url_key)
+            seen_titles.add(title_key)
+            items.append(item)
+
+    def date_key(item):
+        try:
+            stamp = datetime.fromisoformat(str(item.get("published") or "").replace("Z", "+00:00"))
+            return stamp.replace(tzinfo=timezone.utc).timestamp() if stamp.tzinfo is None else stamp.timestamp()
+        except (ValueError, TypeError, OverflowError, OSError):
+            return float("-inf")
+
+    items.sort(key=date_key, reverse=True)
+    return items[:NEWS_FEED_LIMIT], coverage
+
+
 def news_search(query_text):
     q = (query_text or "").strip()
     if not q:
         raise ValueError("Enter a ticker, company, or market topic")
-    key = ("news_search", q.lower())
+    if len(q) > 120:
+        raise ValueError("News search must be 120 characters or fewer")
+    key = ("expanded_news_search", q.lower())
     cached = cache_get(key, 600)
-    if cached:
+    if cached is not None:
         return cached
-    raw = fast_news(q, 24, False)
+    raw, coverage = expanded_news_feed(q)
     ns = news_score(raw); items = ns.pop("items")
-    result = {"query": q, "resolved_query": q, "risk": ns, "items": items, "updated_at": now_iso(), "provider": "Fast Yahoo Finance news with GDELT fallback"}
-    return cache_put(key, result)
+    result = {"query": q, "resolved_query": q, "risk": ns, "items": items,
+              "updated_at": now_iso(), "provider": "Yahoo Finance + GDELT",
+              "provider_counts": coverage, "feed_limit": NEWS_FEED_LIMIT}
+    # Avoid holding a completely empty response for ten minutes during outages.
+    return cache_put(key, result) if items else result
 
 
 def list_positions():
