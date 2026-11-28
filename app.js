@@ -334,7 +334,7 @@ async function News(){
   setTitle('News','Market and company headlines');
   const v=$('#view'),viewSeq=renderGeneration;
   let newsSeq=0;
-  const topics=[['Market','stock market'],['Earnings','stock earnings'],['Economy','US economy Federal Reserve'],['Technology','technology stocks']];
+  const topics=[['Market','stock market'],['Earnings','stock earnings'],['Economy','Federal Reserve'],['Technology','technology stocks'],['Energy','energy stocks'],['Finance','bank stocks'],['Health','healthcare stocks']];
   v.innerHTML=`<div class="section-head news-heading"><h2>News Search</h2><form class="searchbar" id="newsSearch"><label class="sr-only" for="newsQuery">News topic</label><input id="newsQuery" value="${esc(newsQuery)}" placeholder="Ticker, company or topic" maxlength="120"><button class="primary">Search</button></form></div><div class="news-topics filterbar" role="group" aria-label="News topics">${topics.map(([label,query])=>`<button type="button" data-news-query="${esc(query)}" aria-pressed="false">${label}</button>`).join('')}</div><div id="newsOut"></div>`;
   async function run(query){
     const q=String(query||'').trim();if(!q)return;
@@ -347,7 +347,11 @@ async function News(){
       const items=Array.isArray(d.items)?d.items:[],risk=d.risk||{};
       const known=risk.available!==false&&risk.score!=null;
       const total=risk.event_count??0,confirmed=risk.confirmed_event_count??0;
-      $('#newsOut').innerHTML=`<section class="panel panel-pad news-feed"><div class="panel-title"><h3>${esc(d.resolved_query||q)}</h3><span class="caption">${items.length} headlines</span></div><div class="news-summary"><span>News risk <b class="${known?clsRisk(risk.score):'tiny'}">${known?esc(risk.score)+'/100':'Unavailable'}</b></span><span>${confirmed}/${total} confirmed events</span><span class="updated">Retrieved ${timeText(d.updated_at)}</span></div>${risk.available===false?'<div class="warning-box">News evidence unavailable.</div>':''}${fold('Event analysis',newsEventPanel({news_risk:risk}))}${newsRows(items)}<p class="tiny">${esc(d.provider||'Free news sources')} · Headlines may be delayed.</p></section>`;
+      let visibleCount=Math.min(20,items.length);
+      const coverage=d.provider_counts||{};
+      const sourceCount=Object.values(coverage).filter(n=>n>0).length;
+      $('#newsOut').innerHTML=`<section class="panel panel-pad news-feed"><div class="panel-title"><h3>${esc(d.resolved_query||q)}</h3><span class="caption">${items.length} headlines</span></div><div class="news-summary"><span>News risk <b class="${known?clsRisk(risk.score):'tiny'}">${known?esc(risk.score)+'/100':'Unavailable'}</b></span><span>${confirmed}/${total} confirmed events</span><span class="updated">Retrieved ${timeText(d.updated_at)}</span></div>${risk.available===false?'<div class="warning-box">News evidence unavailable.</div>':''}${fold('Event analysis',newsEventPanel({news_risk:risk}))}<div id="newsArticles">${newsRows(items.slice(0,visibleCount))}</div><div class="news-pagination"><span id="newsCount" class="tiny">${visibleCount} / ${items.length} headlines</span>${items.length>visibleCount?'<button type="button" class="secondary" id="moreNews">Load more</button>':''}</div><p class="tiny">${esc(d.provider||'Free news sources')}${Object.keys(coverage).length?` · ${sourceCount}/${Object.keys(coverage).length} feeds returned results`:''} · Headlines may be delayed.</p></section>`;
+      const more=$('#moreNews');if(more)more.onclick=()=>{if(!viewActive(viewSeq)||seq!==newsSeq)return;const next=Math.min(visibleCount+20,items.length);$('#newsArticles').insertAdjacentHTML('beforeend',newsRows(items.slice(visibleCount,next)));visibleCount=next;$('#newsCount').textContent=`${visibleCount} / ${items.length} headlines`;if(visibleCount>=items.length)more.hidden=true;};
     }catch(e){if(viewActive(viewSeq)&&seq===newsSeq)$('#newsOut').innerHTML=errorBox(e)}
   }
   $('#newsSearch').onsubmit=e=>{e.preventDefault();run($('#newsQuery').value)};
