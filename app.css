@@ -363,3 +363,15 @@ textarea {min-height:86px;}
 .chart-toolbar{justify-content:flex-start}
 @media(max-width:1120px){.settings-layout .update-settings{grid-row:auto;grid-column:auto}.settings-layout .optional-settings{grid-column:auto;order:3}.market-indexes.grouped-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.market-indexes.grouped-strip>*:nth-child(odd){border-left:0!important}.market-indexes.grouped-strip>*:nth-child(n+3){border-top:1px solid var(--line)}}
 @media(max-width:690px){.grouped-strip>.metric-card,.grouped-strip>.index-card,.grouped-strip>.zone{padding:10px 12px}.compact-kpis.grouped-strip>*:nth-child(odd),#hunterStats .grouped-strip>*:nth-child(odd),.portfolio-summary.grouped-strip>*:nth-child(odd),.compact-levels.grouped-strip>*:nth-child(odd){border-left:0!important}.compact-kpis.grouped-strip>*:nth-child(n+3),#hunterStats .grouped-strip>*:nth-child(n+3),.portfolio-summary.grouped-strip>*:nth-child(n+3),.compact-levels.grouped-strip>*:nth-child(n+3){border-top:1px solid var(--line)}.market-indexes .index-card .value{font-size:18px}.evidence-group{padding:10px 12px}}
+
+/* Dedicated news workspace, using the same compact terminal surfaces. */
+.news-heading{gap:12px;margin-bottom:12px}
+.news-heading .searchbar{max-width:520px;flex:1;min-width:0}
+.news-heading .searchbar input{min-width:0;flex:1}
+.news-topics{margin-bottom:14px}
+.news-feed{max-width:1100px}
+.news-feed .news-summary{border-top:1px solid var(--line);padding:12px 0}
+.news-feed .compact-fold{margin-bottom:12px}
+.news-feed .news-title{overflow-wrap:anywhere}
+.news-feed .news-row{grid-template-columns:36px minmax(0,1fr) auto}
+@media(max-width:690px){.news-heading .searchbar{flex:1 1 100%;max-width:none}.news-feed .news-row{grid-template-columns:28px minmax(0,1fr) auto;gap:7px}.news-feed .news-summary{gap:8px 12px}}
