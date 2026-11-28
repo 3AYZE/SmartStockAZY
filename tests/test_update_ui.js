@@ -78,3 +78,14 @@ test('Check button requests a forced check, not automatic install', async () => 
     assert.equal(ctx.apiCalls[0], '/api/updates/check?force=1');
     assert.ok(!ctx.apiCalls.some(x => x.includes('/apply')));
 });
+
+test('release notes preview is plain text and only links to official tags',()=>{
+    const {ctx,node}=harness();
+    vm.runInContext("renderUpdateState({status:'available',release_summary:'New charts',release_url:'https://github.com/3AYZE/SmartStockAZY/releases/tag/v0.6.5'})",ctx);
+    assert.equal(node('#updateWhatsNew').textContent,'New charts');
+    assert.equal(node('#updateReleaseLink').hidden,false);
+    vm.runInContext("renderUpdateState({status:'available',release_url:'https://untrusted.example/release'})",ctx);
+    assert.equal(node('#updateReleaseLink').hidden,true);
+    vm.runInContext("renderUpdateState({status:'current'})",ctx);
+    assert.equal(node('#updateWhatsNew').hidden,true);
+});

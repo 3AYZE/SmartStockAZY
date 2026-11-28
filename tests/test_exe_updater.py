@@ -45,6 +45,16 @@ class ExecutableUpdaterTests(unittest.TestCase):
         self.assertFalse(app.is_newer({"tag": "v0.6.4"}, release("v0.6.3")))
         self.assertTrue(app.is_newer({}, release("v0.6.3")))
 
+    def test_release_summary_is_bounded(self):
+        payload = {"tag_name": "v0.6.5", "body": "## Update\n- **Cleaner** charts\n- Better news\n- " + "x"*250 + "\n- Not included",
+                   "assets": [{"name": "SmartStockAZY.exe", "id": 17, "size": 400,
+                               "digest": "sha256:" + "a"*64}]}
+        with patch.object(app, "_read_limited", return_value=json.dumps(payload).encode()):
+            result = app.newest_release()
+        self.assertIn("Cleaner charts", result["release_summary"])
+        self.assertNotIn("Not included", result["release_summary"])
+        self.assertLess(len(result["release_summary"]), 300)
+
     def test_release_metadata_must_contain_sha256(self):
         payload = {
             "tag_name": "v0.6.3", "draft": False, "prerelease": False,

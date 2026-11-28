@@ -101,9 +101,14 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
         open: 145 + i, close: 146 + i, volume: 1000000 + 10000 * i,
       })) : stock('NVDA').history});
     }
-    if (pathname.startsWith('/api/news-search/'))
-      return send({items: [], resolved_query: decodeURIComponent(pathname.split('/').pop()),
+    if (pathname.startsWith('/api/news-search/')) {
+      const query = decodeURIComponent(pathname.split('/').pop());
+      return send({items: Array.from({length: 45}, (_, i) => ({
+        title: 'Example headline ' + i, publisher: 'QA fixture', url: 'https://example.com/' + i,
+        reliability: 80, published: '2026-11-20T10:00:00Z', confirmation: 'UNVERIFIED',
+      })), resolved_query: query, provider_counts: {'Yahoo Finance': 30, GDELT: 15},
         risk: {score: 0, events: [], confirmed_event_count: 0, event_count: 0}});
+    }
     if (pathname === '/api/settings') {
       if (req.method === 'POST') prefs = {...prefs, ...JSON.parse(body)};
       return send(prefs);
@@ -157,16 +162,38 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.goto(base);
   assert.equal(await page.title(), 'SmartStockAZY — Stock Research Terminal');
   await page.getByText('S&P 500').waitFor();
-  assert.equal(await page.locator('.nav-link').count(), 4);
+  assert.equal(await page.locator('.nav-link').count(), 5);
   assert.equal(await page.locator('#versionBadge').textContent(), 'v0.5.1');
+  assert.equal(await page.locator('.market-indexes.grouped-strip').count(), 1);
+  assert.equal(await page.locator('.market-indexes .index-card').count(), 2);
   await capture('market.png');
+  await page.locator('#openMarketNews').click();
+  await page.locator('.news-feed').waitFor();
+  assert.equal(await page.locator('#newsQuery').inputValue(), 'stock market');
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 20);
+  await page.locator('#moreNews').click();
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 40);
+  await page.locator('#moreNews').click();
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 45);
+  assert.equal(await page.locator('#moreNews').isVisible(), false);
+  await page.locator('#newsImpact').selectOption('HIGH');
+  await page.getByText('No headlines match these filters.').waitFor();
+  await page.locator('#newsImpact').selectOption('All');
+  assert.equal(await page.locator('#newsArticles .news-row').count(), 20);
+  await page.getByRole('button', {name: 'Earnings', exact: true}).click();
+  await page.locator('.news-feed h3').getByText('stock earnings', {exact: true}).waitFor();
+  await page.locator('#newsQuery').fill('NVDA');
+  await page.locator('#newsSearch').getByRole('button', {name:'Search', exact:true}).click();
+  await page.locator('.news-feed h3').getByText('NVDA', {exact:true}).waitFor();
+  await page.getByRole('button', {name: 'Market', exact: true}).first().click();
+  await page.locator('#quickHunter').waitFor();
   await page.locator('#quickHunter').click();
   await page.locator('.hunter-row').first().waitFor();
   assert.equal(await page.locator('#hunterStats .metric-card').count(), 4);
   assert.equal(await page.locator('.hunter-row').count(), 2);
-  await page.getByRole('button', {name: 'Low Risk'}).click();
+  await page.locator('#hunterQuick').selectOption('Low Risk');
   assert.equal(await page.locator('.hunter-row').count(), 1);
-  await page.getByRole('button', {name: 'All', exact: true}).click();
+  await page.locator('#hunterQuick').selectOption('All');
   await page.evaluate(() => {window.__qaHunterSearch = document.querySelector('#hunterSearch')});
   await page.locator('#hunterSearch').fill('MSFT');
   assert.equal(await page.locator('.hunter-row').count(), 1);
@@ -191,6 +218,8 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('.chart-wrap').waitFor();
   assert.equal(await page.locator('.decision-summary .metric-card').count(), 4);
   assert.equal(await page.locator('.compact-levels .zone').count(), 3);
+  assert.equal(await page.locator('.price-history-slot').locator('xpath=ancestor::section[1]').locator('.compact-levels').count(), 1);
+  assert.equal(await page.locator('.evidence-group').count(), 1);
   const reasoning = page.locator('details.compact-fold').filter({has: page.getByText('Research reasoning', {exact: true})});
   assert.equal(await reasoning.getAttribute('open'), null);
   await reasoning.locator('summary').click();
@@ -198,6 +227,9 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await reasoning.locator('summary').click();
   assert.equal(await reasoning.getAttribute('open'), null);
   assert.equal(await page.locator('.score-list:visible').count(), 0);
+  await page.locator('[data-chart-mode="candles"]').click();
+  await page.getByText('Complete OHLC data unavailable; showing line chart.').waitFor();
+  await page.locator('[data-chart-mode="line"]').click();
   await page.locator('.chart-wrap').hover({position: {x: 160, y: 90}});
   assert.notEqual(await page.locator('.js-chart-price').textContent(), '—');
   await page.locator('.range-btn[data-range="1mo"]').click();
@@ -273,6 +305,20 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('#ps').fill('3');
   await page.locator('#savePos').click();
   await page.locator('.portfolio-summary').getByText('Lots').waitFor();
+  await page.locator('#positionEditor summary').click();
+  await page.locator('#pt').fill('NVDA');
+  await page.locator('#ps').fill('1');
+  await page.locator('#pa').fill('130');
+  await page.locator('#savePos').click();
+  const companyLots = page.locator('[data-lot-group="NVDA"]');
+  await companyLots.waitFor();
+  assert.equal(await page.locator('[data-company-lot="NVDA"]:visible').count(), 0);
+  await companyLots.click();
+  assert.equal(await page.locator('[data-company-lot="NVDA"]:visible').count(), 2);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('[data-company-lot="NVDA"] [data-del]').last().click();
+  await companyLots.waitFor({state:'detached'});
+  await page.locator('[data-edit]').waitFor();
   await page.locator('[data-tab="Risk Monitor"]').click();
   await page.getByText('Portfolio Risk Defense').waitFor();
   await capture('risk.png');
@@ -285,6 +331,12 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-del]').click();
   await page.getByText('No positions stored yet.').waitFor();
   await page.locator('#settingsNav').click();
+  await page.locator('#hm').waitFor();
+  assert.equal(await page.locator('.setting-group').count(), 3);
+  assert.equal(await page.locator('.optional-settings').getAttribute('open'), null);
+  await page.locator('.optional-settings summary').click();
+  await page.locator('#oe').waitFor({state: 'visible'});
+  await page.locator('.optional-settings summary').click();
   await page.locator('#hm').fill('25');
   await page.getByRole('button', {name: 'SAVE SETTINGS'}).click();
   await page.getByText('Saved ✓').waitFor();
@@ -294,10 +346,11 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await capture('settings.png');
   await page.reload();
   await page.locator('#settingsNav').click();
+  await page.locator('#hm').waitFor();
   assert.equal(await page.locator('#hm').inputValue(), '25');
   for (const [width, height] of [[1920, 1080], [1600, 900], [1366, 768], [1280, 720], [1024, 768], [840, 720], [720, 720], [480, 700]]) {
     await page.setViewportSize({width, height});
-    for (const section of ['Market', 'Discover', 'Research', 'Portfolio', 'Settings']) {
+    for (const section of ['Market', 'Discover', 'Research', 'News', 'Portfolio', 'Settings']) {
       if (section === 'Settings') await page.locator('#settingsNav').click();
       else await page.locator(`[data-page="${section}"]`).click();
       const size = await page.evaluate(() => ({
@@ -323,6 +376,7 @@ test('real browser: terminal navigation, scanner, research, portfolio, settings,
   await page.locator('[data-page="Market"]').click();
   dashboardFailure = true;
   await page.locator('#refreshDash').click();
-  await page.getByText('Market source offline').waitFor();
+  await page.getByText(/Market source offline/).waitFor();
+  await page.getByText('S&P 500').waitFor();
   assert.deepEqual(exceptions, [], 'Unexpected browser JavaScript errors');
 });
