@@ -11,7 +11,9 @@ const ICONS={
 };
 function icon(name){return `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]||''}</svg>`}
 let page="Market", newsQuery="stock market", portfolioTab="Holdings", portfolioEditorOpen=false, researchTab="Overview", hunterData=null, hunterFilter="All", lastResearchTicker="NVDA", researchDetailActive=false, researchReturnPage="Research", researchReturnScrollY=0, researchChartRange="1y", researchRequestSeq=0, settingsFocusUpdates=false;
-let hunterAdvancedOpen=false, hunterExpanded=new Set();
+let hunterAdvancedOpen=false, hunterExpanded=new Set(), portfolioExpanded=new Set();
+let chartMode='line';
+let newsPreferences={sort:'newest',impact:'All',sentiment:'All',publisher:'All',group:true};
 let hunterSearch="", hunterSort={key:"setup_rank",dir:"desc"}, hunterMinOpportunity=0, hunterMaxRisk=100, hunterSector="All";
 let renderGeneration=0, marketRequestSeq=0;
 const viewActive=seq=>seq===renderGeneration;
@@ -203,14 +205,15 @@ function newsRows(items=[],compact=false){return items.length?`<div class="marke
 async function Market(force=false){
   setTitle('Market','Indexes, sector strength, news and market conditions');
   const v=$('#view'),viewSeq=renderGeneration,marketSeq=++marketRequestSeq;
-  v.innerHTML=loading('Loading market overview…');
+  const keep=force===true&&!!v.querySelector?.('.market-indexes');
+  if(keep){const btn=$('#refreshDash');btn.disabled=true;btn.textContent='Refreshing…';$('#marketRefreshStatus').innerHTML='<span class="tiny">Showing previous snapshot while refreshing.</span>';}else v.innerHTML=loading('Loading market overview…');
   try{
     const d=await api(force===true?'/api/dashboard?force=1':'/api/dashboard');
     if(!viewActive(viewSeq)||marketSeq!==marketRequestSeq)return;
     const indexes=d.indexes||[],sectors=d.sectors||[],articles=d.news||[];
     const maxSector=Math.max(1,...sectors.map(x=>Math.abs(x.change_percent||0)));
     v.innerHTML=`<div class="section-head"><div><h2>Market snapshot</h2><p>Retrieved ${timeText(d.updated_at)} · delayed data</p></div><div class="toolbar"><button class="secondary" id="refreshDash">Refresh data</button><button class="primary" id="quickHunter">Scan stocks</button></div></div>
-    ${(d.errors||[]).length?`<div class="warning-box">Partial market data: ${d.errors.length} source(s) unavailable.</div>`:''}
+    <div id="marketRefreshStatus" role="status"></div>${(d.errors||[]).length?`<div class="warning-box">Partial market data: ${d.errors.length} source(s) unavailable.</div>`:''}
     ${indexes.length?`<div class="market-indexes grouped-strip panel">${indexes.map(x=>`<article class="index-card grouped-cell"><div class="index-head"><span>${esc(x.name)}</span><small>${esc(x.ticker)}</small></div><div class="value">${money(x.price)}</div><div class="index-change">${pct(x.change_percent)}</div><div class="tiny">Observed ${esc(x.observed_at?timeText(x.observed_at):"Unavailable")}</div></article>`).join('')}</div>`:'<div class="empty">No index quotes available. Refresh when the source returns.</div>'}
     <div class="market-grid"><div class="stack"><section class="regime-banner"><div><span class="caption">Market regime</span><b>${esc(d.regime?.label||'UNKNOWN')}</b><p class="tiny">S&P 1-month ${d.regime?.sp500_momentum_1m!=null?pct(d.regime.sp500_momentum_1m):'Unavailable'} · VIX ${d.regime?.vix??'Unavailable'}</p></div><span class="status ${statusClass(d.regime?.label||'')}">Entry adjustment ${d.regime?.entry_adjust??'—'}</span></section>
     ${panel('Sector performance',sectors.length?`<div class="sector-table">${sectors.map(x=>`<div class="sector-row"><div><div class="sector-name">${esc(x.name)}</div><div class="bar"><div class="fill" style="width:${Math.min(100,Math.abs(x.change_percent||0)/maxSector*100)}%"></div></div></div><small>${esc(x.ticker)}</small><strong>${pct(x.change_percent)}</strong></div>`).join('')}</div>`:'<div class="empty">Sector data unavailable.</div>',``)}</div>
@@ -218,7 +221,7 @@ async function Market(force=false){
     $('#refreshDash').onclick=()=>Market(true);
     $('#quickHunter').onclick=()=>{page='Discover';nav();render(true)};
     $('#openMarketNews').onclick=()=>openNews('stock market');
-  }catch(e){if(viewActive(viewSeq)&&marketSeq===marketRequestSeq)v.innerHTML=errorBox(e)}
+  }catch(e){if(viewActive(viewSeq)&&marketSeq===marketRequestSeq){if(keep){$('#marketRefreshStatus').innerHTML=`<div class="warning-box">Refresh failed: ${esc(e.message||e)}. Previous snapshot retained.</div>`;const btn=$('#refreshDash');btn.disabled=false;btn.textContent='Refresh data';}else v.innerHTML=errorBox(e)}}
 }
 
 function searchBar(button='ANALYZE',value='NVDA'){return`<form class="searchbar" id="search"><input id="ticker" value="${esc(value)}" placeholder="Ticker, e.g. NVDA"><button class="primary">${button}</button></form>`}
@@ -241,17 +244,16 @@ function renderHunterTable(){
   const out=$('#hunterResults');if(!out||!hunterData)return;
   const rows=filteredHunter(),sectors=['All',...new Set((hunterData.results||[]).map(x=>x.sector?.sector||'Broad Market'))];
   const freshControls=!out.querySelector('.hunter-controls');
-  if(freshControls)out.innerHTML=`<div class="hunter-controls"><div class="filterbar" role="group" aria-label="Quick filters">${['All','Momentum','Quality','Low Risk','Strong Setup','Pullback Watch','Oversold','High Volume'].map(x=>`<button type="button" data-f="${x}" class="${hunterFilter===x?'active':''}" aria-pressed="${hunterFilter===x}">${x}</button>`).join('')}</div>
-  <div class="hunter-search-row"><label class="hunter-search-label"><span class="sr-only">Search results</span><input id="hunterSearch" type="search" placeholder="Filter by ticker or company" value="${esc(hunterSearch)}" autocomplete="off"></label><details class="filter-details" id="hunterAdvanced" ${hunterAdvancedOpen?'open':''}><summary>Advanced filters <span aria-hidden="true">⌄</span></summary><div class="hunter-fields"><label>Minimum opportunity<input id="hunterMinOpp" type="number" min="0" max="100" value="${hunterMinOpportunity}"></label><label>Maximum risk<input id="hunterMaxRisk" type="number" min="0" max="100" value="${hunterMaxRisk}"></label><label>Sector<select id="hunterSector">${sectors.map(x=>`<option ${x===hunterSector?'selected':''}>${esc(x)}</option>`).join('')}</select></label></div></details></div></div>
+  if(freshControls)out.innerHTML=`<div class="hunter-controls"><div class="hunter-search-row"><label class="quick-filter"><span class="sr-only">Setup filter</span><select id="hunterQuick" aria-label="Setup filter">${['All','Momentum','Quality','Low Risk','Strong Setup','Pullback Watch','Oversold','High Volume'].map(x=>`<option value="${x}" ${hunterFilter===x?'selected':''}>${x==='All'?'All setups':x}</option>`).join('')}</select></label><label class="hunter-search-label"><span class="sr-only">Search results</span><input id="hunterSearch" type="search" placeholder="Filter by ticker or company" value="${esc(hunterSearch)}" autocomplete="off"></label><details class="filter-details" id="hunterAdvanced" ${hunterAdvancedOpen?'open':''}><summary>Advanced filters <span aria-hidden="true">⌄</span></summary><div class="hunter-fields"><label>Minimum opportunity<input id="hunterMinOpp" type="number" min="0" max="100" value="${hunterMinOpportunity}"></label><label>Maximum risk<input id="hunterMaxRisk" type="number" min="0" max="100" value="${hunterMaxRisk}"></label><label>Sector<select id="hunterSector">${sectors.map(x=>`<option ${x===hunterSector?'selected':''}>${esc(x)}</option>`).join('')}</select></label></div></details></div></div>
   <div class="hunter-results-body"></div>`;
+  const sectorControl=$('#hunterSector');if(sectorControl){if(!sectors.includes(hunterSector))hunterSector='All';sectorControl.innerHTML=sectors.map(x=>`<option ${x===hunterSector?'selected':''}>${esc(x)}</option>`).join('');}
   const results=$('.hunter-results-body',out);
   results.innerHTML=`<div class="results-toolbar"><span>${rows.length} / ${(hunterData.results||[]).length} matches</span></div>
   ${rows.length?`<div class="table-wrap hunter-table-wrap"><table><thead><tr>${sortHead('Stock','ticker')}${sortHead('Price','price')}${sortHead('Day','change')}${sortHead('Opportunity','opportunity')}${sortHead('Entry','entry')}${sortHead('Risk','risk')}${sortHead('Setup','setup_rank')}${sortHead('Sector','sector')}<th scope="col">Actions</th></tr></thead><tbody>${rows.map(r=>`<tr class="hunter-row" data-ticker="${esc(r.ticker)}" tabindex="0" title="Open research for ${esc(r.ticker)}"><td><b>${esc(r.ticker)}</b><span class="company">${esc(r.name||'')}</span></td><td class="numeric">${money(r.price)}</td><td class="numeric">${pct(r.change_percent)}</td><td class="numeric"><span class="score-chip">${r.scores?.opportunity??'—'}</span></td><td class="numeric">${r.scores?.entry??'—'}</td><td class="numeric"><span class="score-chip risk">${r.scores?.risk??'—'}</span></td><td><span class="status ${statusClass(r.status)}">${esc(r.status||'UNKNOWN')}</span></td><td>${esc(r.sector?.sector||'Broad Market')}</td><td class="action-cell"><button class="secondary small" data-research="${esc(r.ticker)}" type="button">Research ↗</button><button class="ghost small" type="button" data-details="${esc(r.ticker)}" aria-expanded="${hunterExpanded.has(r.ticker)}">${hunterExpanded.has(r.ticker)?'Less':'Details'}</button></td></tr>
   ${hunterExpanded.has(r.ticker)?`<tr class="hunter-detail"><td colspan="9"><div class="hunter-evidence"><div><span>Quality</span><b>${r.scores?.quality??'—'}</b></div><div><span>Momentum</span><b>${r.scores?.momentum??'—'}</b></div><div><span>Confidence</span><b>${r.scores?.confidence??'—'}</b></div><div><span>Avg volume</span><b>${number(r.indicators?.avg_volume20,true)}</b></div><div><span>Gap risk</span><b>${r.indicators?.gap_risk??'—'}</b></div><div><span>Knife risk</span><b>${r.indicators?.falling_knife_risk??'—'}</b></div><div><span>Risk/reward</span><b>${r.price_model?.risk_reward??'—'}</b></div><p>${esc(r.why||'No additional explanation available.')}</p></div></td></tr>`:''}`).join('')}</tbody></table></div>`:'<div class="empty">No opportunities match these filters. Clear the search or adjust the filters.</div>'}
   ${fold('Scan details',`<p class="tiny">${esc(hunterData.note||'Free data may be delayed.')}</p>${(hunterData.errors||[]).map(e=>`<div class="tiny">${esc(e.ticker)}: ${esc(e.error)}</div>`).join('')}`)}`;
-  $$('.filterbar button',out).forEach(b=>{b.classList.toggle('active',b.dataset.f===hunterFilter);b.setAttribute('aria-pressed',String(b.dataset.f===hunterFilter))});
   if(freshControls){
-    $$('.filterbar button',out).forEach(b=>b.onclick=()=>{hunterFilter=b.dataset.f;renderHunterTable()});
+    $('#hunterQuick').onchange=e=>{hunterFilter=e.target.value;renderHunterTable()};
     $('#hunterSearch').oninput=e=>{hunterSearch=e.target.value;renderHunterTable()};
     $('#hunterAdvanced').ontoggle=e=>{hunterAdvancedOpen=e.target.open};
     $('#hunterMinOpp').onchange=e=>{hunterMinOpportunity=Math.max(0,Math.min(100,Number(e.target.value)||0));renderHunterTable()};
@@ -272,7 +274,7 @@ function renderHunterSummary(){
   const results=hunterData.results||[],scanned=Number(hunterData.scanned)||0;
   $('#hunterStats').innerHTML=`<div class="kpi-row grouped-strip panel" style="margin-bottom:10px">${metricCard('Scanned',scanned)}${metricCard('Results',results.length)}${metricCard('Unavailable',Math.max(0,scanned-(hunterData.successful??results.length)))}${metricCard('Market',esc(hunterData.regime?.label||'UNKNOWN'))}</div>`;
 }
-async function Hunter(auto=false){setTitle('Discover','Search and rank stock opportunities by entry quality and downside risk');let v=$('#view'),viewSeq=renderGeneration,hunterSeq=0;v.innerHTML=`<div class="section-head"><div><h2>Stock scanner</h2></div><div class="toolbar"><button class="primary" id="runHunter">Scan stocks</button></div></div><div id="hunterStats"></div><div id="hunterResults">${hunterData?loading('Rendering cached scan…'):'<div class="empty">Scan stocks to get started.</div>'}</div>`;async function run(){let seq=++hunterSeq;let b=$('#runHunter');b.disabled=true;$('#hunterResults').innerHTML=loading('Scanning stocks…');try{let scanned=await api('/api/hunter',{method:'POST',body:'{}'});if(!viewActive(viewSeq)||seq!==hunterSeq)return;hunterData=scanned;renderHunterSummary();renderHunterTable()}catch(e){if(viewActive(viewSeq)&&seq===hunterSeq)$('#hunterResults').innerHTML=errorBox(e)}finally{b.disabled=false}}$('#runHunter').onclick=run;if(hunterData){renderHunterSummary();renderHunterTable()}if(auto)run()}
+async function Hunter(auto=false){setTitle('Discover','Search and rank stock opportunities by entry quality and downside risk');let v=$('#view'),viewSeq=renderGeneration,hunterSeq=0;v.innerHTML=`<div class="section-head"><div><h2>Stock scanner</h2></div><div class="toolbar"><button class="primary" id="runHunter">Scan stocks</button></div></div><div id="hunterScanStatus" role="status"></div><div id="hunterStats"></div><div id="hunterResults">${hunterData?loading('Rendering cached scan…'):'<div class="empty">Scan stocks to get started.</div>'}</div>`;async function run(){let seq=++hunterSeq;let b=$('#runHunter');b.disabled=true;b.textContent='Scanning…';if(hunterData)$('#hunterScanStatus').innerHTML='<p class="tiny">Showing previous scan while updating.</p>';else $('#hunterResults').innerHTML=loading('Scanning stocks…');try{let scanned=await api('/api/hunter',{method:'POST',body:'{}'});if(!viewActive(viewSeq)||seq!==hunterSeq)return;hunterData=scanned;$('#hunterScanStatus').innerHTML='';renderHunterSummary();renderHunterTable()}catch(e){if(viewActive(viewSeq)&&seq===hunterSeq){if(hunterData)$('#hunterScanStatus').innerHTML=`<div class="warning-box">Scan failed: ${esc(e.message||e)}. Previous scan retained.</div>`;else $('#hunterResults').innerHTML=errorBox(e)}}finally{b.disabled=false;b.textContent='Scan stocks'}}$('#runHunter').onclick=run;if(hunterData){renderHunterSummary();renderHunterTable()}if(auto)run()}
 
 function researchLists(title,items=[]){return`<div class="list-box"><h4>${title}</h4>${items?.length?`<ul class="thesis-list">${items.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="tiny">No items reported.</div>'}</div>`}
 function decisionOverview(d){
@@ -326,6 +328,13 @@ showTab();
 async function run(t){let clean=String(t||'').trim().toUpperCase();if(!clean)return;let seq=++researchRequestSeq;if(lastResearchTicker!==clean)researchChartRange='1y';lastResearchTicker=clean;const heading=$('.research-header h2');if(heading)heading.textContent=clean+' · Research';$('#ticker').value=clean;$('#out').innerHTML=loading('Loading market structure and timing risk…');let fast=null;try{fast=await api('/api/stock/'+encodeURIComponent(clean));if(seq!==researchRequestSeq||!viewActive(viewSeq))return;$('#out').innerHTML=stockHero(fast)+researchPanels(fast,false)+`<div style="margin-top:12px">${loading('Loading research…')}</div>`;mountPriceHistory($('#out .price-history-slot'),fast.ticker||fast.quote?.ticker||clean,fast.history||[],researchChartRange,{indicators:fast.indicators||{},price_model:fast.price_model||{}})}catch(e){if(seq===researchRequestSeq&&viewActive(viewSeq))$('#out').innerHTML=errorBox(e);return}try{let d=await api('/api/research/'+encodeURIComponent(clean),{method:'POST'});if(seq!==researchRequestSeq||!viewActive(viewSeq))return;renderFull(d)}catch(e){if(seq===researchRequestSeq&&viewActive(viewSeq))$('#out').insertAdjacentHTML('beforeend',errorBox(e))}}
 $('#researchReturn').onclick=returnFromResearch;$('#search').onsubmit=e=>{e.preventDefault();run($('#ticker').value)};run(lastResearchTicker)}
 
+function newsGroups(items,prefs){
+  const rank={HIGH:3,MEDIUM:2,LOW:1};
+  const rows=items.filter(x=>(prefs.impact==='All'||x.impact===prefs.impact)&&(prefs.sentiment==='All'||x.sentiment===prefs.sentiment)&&(prefs.publisher==='All'||x.publisher===prefs.publisher));
+  const date=x=>Date.parse(x.published)||0;
+  rows.sort((a,b)=>(prefs.sort==='impact'?(rank[b.impact]||0)-(rank[a.impact]||0):0)||date(b)-date(a));
+  const groups=new Map();for(const [i,x] of rows.entries()){const key=prefs.group&&x.event_id?'event:'+x.event_id:'article:'+i;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(x)}return [...groups.values()];
+}
 function openNews(query){
   newsQuery=String(query||'stock market').trim()||'stock market';
   if(page==='News')render();else navigate('News');
@@ -347,11 +356,26 @@ async function News(){
       const items=Array.isArray(d.items)?d.items:[],risk=d.risk||{};
       const known=risk.available!==false&&risk.score!=null;
       const total=risk.event_count??0,confirmed=risk.confirmed_event_count??0;
-      let visibleCount=Math.min(20,items.length);
+      let visibleCount=20;
       const coverage=d.provider_counts||{};
       const sourceCount=Object.values(coverage).filter(n=>n>0).length;
-      $('#newsOut').innerHTML=`<section class="panel panel-pad news-feed"><div class="panel-title"><h3>${esc(d.resolved_query||q)}</h3><span class="caption">${items.length} headlines</span></div><div class="news-summary"><span>News risk <b class="${known?clsRisk(risk.score):'tiny'}">${known?esc(risk.score)+'/100':'Unavailable'}</b></span><span>${confirmed}/${total} confirmed events</span><span class="updated">Retrieved ${timeText(d.updated_at)}</span></div>${risk.available===false?'<div class="warning-box">News evidence unavailable.</div>':''}${fold('Event analysis',newsEventPanel({news_risk:risk}))}<div id="newsArticles">${newsRows(items.slice(0,visibleCount))}</div><div class="news-pagination"><span id="newsCount" class="tiny">${visibleCount} / ${items.length} headlines</span>${items.length>visibleCount?'<button type="button" class="secondary" id="moreNews">Load more</button>':''}</div><p class="tiny">${esc(d.provider||'Free news sources')}${Object.keys(coverage).length?` · ${sourceCount}/${Object.keys(coverage).length} feeds returned results`:''} · Headlines may be delayed.</p></section>`;
-      const more=$('#moreNews');if(more)more.onclick=()=>{if(!viewActive(viewSeq)||seq!==newsSeq)return;const next=Math.min(visibleCount+20,items.length);$('#newsArticles').insertAdjacentHTML('beforeend',newsRows(items.slice(visibleCount,next)));visibleCount=next;$('#newsCount').textContent=`${visibleCount} / ${items.length} headlines`;if(visibleCount>=items.length)more.hidden=true;};
+      const publishers=[...new Set(items.map(x=>x.publisher).filter(Boolean))].sort();
+      if(!publishers.includes(newsPreferences.publisher))newsPreferences.publisher='All';
+      const opts=(values,selected)=>values.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('');
+      $('#newsOut').innerHTML=`<section class="panel panel-pad news-feed"><div class="panel-title"><h3>${esc(d.resolved_query||q)}</h3><span class="caption">${items.length} headlines</span></div><div class="news-summary"><span>News risk <b class="${known?clsRisk(risk.score):'tiny'}">${known?esc(risk.score)+'/100':'Unavailable'}</b></span><span>${confirmed}/${total} confirmed events</span><span class="updated">Retrieved ${timeText(d.updated_at)}</span></div>${risk.available===false?'<div class="warning-box">News evidence unavailable.</div>':''}${fold('Event analysis',newsEventPanel({news_risk:risk}))}<div class="news-filters"><select id="newsSort" aria-label="Sort news">${opts([['newest','Newest'],['impact','Importance']],newsPreferences.sort)}</select><select id="newsImpact" aria-label="News importance">${opts([['All','All impact'],['HIGH','High'],['MEDIUM','Medium'],['LOW','Low']],newsPreferences.impact)}</select><select id="newsSentiment" aria-label="News sentiment">${opts([['All','All sentiment'],['BULLISH','Bullish'],['BEARISH','Bearish'],['NEUTRAL','Neutral']],newsPreferences.sentiment)}</select><select id="newsPublisher" aria-label="News source">${opts([['All','All sources'],...publishers.map(x=>[x,x])],newsPreferences.publisher)}</select><label class="news-group-toggle"><input id="newsGroup" type="checkbox" ${newsPreferences.group?'checked':''}> Group stories</label></div><div id="newsArticles"></div><div class="news-pagination"><span id="newsCount" class="tiny"></span><button type="button" class="secondary" id="moreNews">Load more</button></div><p class="tiny">${esc(d.provider||'Free news sources')}${Object.keys(coverage).length?` · ${sourceCount}/${Object.keys(coverage).length} feeds returned results`:''} · Headlines may be delayed.</p></section>`;
+      function show(reset=true){
+        const groups=newsGroups(items,newsPreferences);
+        if(reset)visibleCount=20;
+        const shown=groups.slice(0,visibleCount);
+        $('#newsArticles').innerHTML=shown.length?shown.map(g=>newsRows(g.slice(0,1),true)+(g.length>1?fold(`Related coverage (${g.length-1})`,newsRows(g.slice(1),true),'related-news'):'')).join(''):'<div class="empty">No headlines match these filters.</div>';
+        $('#newsCount').textContent=`${shown.length} / ${groups.length} ${newsPreferences.group?'stories':'headlines'}`;
+        $('#moreNews').hidden=shown.length>=groups.length;
+      }
+      for(const [id,key] of [['newsSort','sort'],['newsImpact','impact'],['newsSentiment','sentiment'],['newsPublisher','publisher']])$('#'+id).onchange=e=>{newsPreferences[key]=e.target.value;show()};
+      $('#newsGroup').onchange=e=>{newsPreferences.group=e.target.checked;show()};
+      $('#moreNews').onclick=()=>{if(!viewActive(viewSeq)||seq!==newsSeq)return;visibleCount+=20;show(false)};
+      show();
+
     }catch(e){if(viewActive(viewSeq)&&seq===newsSeq)$('#newsOut').innerHTML=errorBox(e)}
   }
   $('#newsSearch').onsubmit=e=>{e.preventDefault();run($('#newsQuery').value)};
