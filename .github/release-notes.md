@@ -9,6 +9,8 @@
 
 - Expanded news coverage across both existing providers, with up to 100 unique headlines per feed and Load more in batches of 20.
 
+- Added news filtering and related coverage, preserved previous results during market and scanner refresh, grouped multiple portfolio lots, and added OHLC candlestick mode.
+
 ## Download
 
 **Windows 10/11 (64-bit):** Download **SmartStockAZY.exe** from Assets. No Python, paid API or GitHub account required. The executable is unsigned.
