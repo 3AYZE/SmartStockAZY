@@ -5,6 +5,8 @@
 - Grouped detailed evidence and simplified news previews.
 - Consolidated settings and kept optional AI collapsed when disabled.
 
+- Added a dedicated News workspace with automatic market headlines, quick topics, ticker search and expandable event analysis.
+
 ## Download
 
 **Windows 10/11 (64-bit):** Download **SmartStockAZY.exe** from Assets. No Python, paid API or GitHub account required. The executable is unsigned.
