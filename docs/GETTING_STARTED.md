@@ -18,6 +18,7 @@ The EXE is a **standalone, portable Windows 64-bit application**. It does not re
 - **Market:** Review market indexes, sectors, and headlines.
 - **Discover:** Run Stonk Hunter and filter stocks by risk and opportunity.
 - **Research:** Search a ticker to view price charts, financial information, risks, and source evidence.
+- **News:** Browse market headlines or search by ticker, company, or topic.
 - **Portfolio:** Add holdings and review positions, risk, and alerts.
 - **Settings:** Configure optional features and check for application updates.
 
